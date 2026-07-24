@@ -47,7 +47,6 @@ import java.util.stream.Stream;
 import javax.swing.JFileChooser;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.extern.slf4j.Slf4j;
@@ -92,7 +91,6 @@ import static net.brlns.gdownloader.util.StringUtils.nullOrEmpty;
 @Getter
 @EqualsAndHashCode
 @ToString
-@RequiredArgsConstructor
 public class QueueEntry {
 
     private final GDownloader main;
@@ -186,6 +184,21 @@ public class QueueEntry {
 
     private final Queue<String> pendingFormatQueue = new ConcurrentLinkedQueue<>();
     private final Set<String> uniquePendingFormats = ConcurrentHashMap.newKeySet();
+
+    public QueueEntry(GDownloader mainIn, MediaCard mediaCardIn, String filterIdIn,
+        AbstractUrlFilter originalFilterIn, String originalUrlIn, String urlIn,
+        long downloadIdIn, List<AbstractDownloader> downloadersIn) {
+        main = mainIn;
+        mediaCard = mediaCardIn;
+        filterId = filterIdIn;
+        originalFilter = originalFilterIn;
+        originalUrl = originalUrlIn;
+        url = urlIn;
+        downloadId = downloadIdIn;
+        downloaders = downloadersIn;
+
+        mediaCard.setUrlHint(url);
+    }
 
     public AbstractUrlFilter getFilter() {
         return main.getConfig().getUrlFilterById(filterId).orElse(originalFilter);
@@ -1006,8 +1019,6 @@ public class QueueEntry {
 
         updateMediaRightClickOptions();
         updateExtraRightClickOptions();
-
-        mediaCard.setUrlHint(url);
     }
 
     public void updateExtraRightClickOptions() {

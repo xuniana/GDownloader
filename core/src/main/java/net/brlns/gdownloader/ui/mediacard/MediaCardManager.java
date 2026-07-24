@@ -70,6 +70,7 @@ import static net.brlns.gdownloader.ui.UIUtils.runOnEDT;
 import static net.brlns.gdownloader.ui.UIUtils.scrollPaneToBottom;
 import static net.brlns.gdownloader.ui.themes.ThemeProvider.color;
 import static net.brlns.gdownloader.ui.themes.UIColors.*;
+import static net.brlns.gdownloader.util.StringUtils.containsIgnoreCase;
 
 /**
  * @author Gabriel / hstr0100 / vertx010
@@ -957,22 +958,17 @@ public final class MediaCardManager {
         String[] labels = card.getLabelText();
         if (labels != null) {
             for (String label : labels) {
-                if (label != null && label.toLowerCase().contains(query)) {
+                if (containsIgnoreCase(label, query)) {
                     return true;
                 }
             }
         }
 
-        if (card.getUrlHint().contains(query)) {
+        if (containsIgnoreCase(card.getUrlHint(), query)) {
             return true;
         }
 
-        String tooltip = card.getTooltipText();
-        if (tooltip != null && tooltip.toLowerCase().contains(query)) {
-            return true;
-        }
-
-        return false;
+        return containsIgnoreCase(card.getTooltipText(), query);
     }
 
     private class MediaCardMouseAdapter extends MouseAdapter {

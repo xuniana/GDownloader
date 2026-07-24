@@ -155,7 +155,7 @@ public class DownloadManager implements IEvent, AutoCloseable {
                 && main.getConfig().isRestoreSessionAfterRestart()) {
                 ToastMessenger.show(Message.builder()
                     .message("gui.restoring_session.toast")
-                    .durationMillis(5000)
+                    .durationMillis(4000)
                     .messageType(MessageTypeEnum.INFO)
                     .discardDuplicates(true)
                     .build());
