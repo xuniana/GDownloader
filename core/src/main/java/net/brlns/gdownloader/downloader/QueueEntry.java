@@ -57,6 +57,7 @@ import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.EventDispatcher.LambdaHandler;
 import net.brlns.gdownloader.filters.AbstractUrlFilter;
 import net.brlns.gdownloader.filters.GenericFilter;
+import net.brlns.gdownloader.filters.YoutubePlaylistFilter;
 import net.brlns.gdownloader.persistence.EntityFingerprint;
 import net.brlns.gdownloader.persistence.ICheckpointable;
 import net.brlns.gdownloader.persistence.PersistenceManager;
@@ -157,6 +158,8 @@ public class QueueEntry implements ICheckpointable<Long> {
 
     private final AtomicBoolean recordedInHistory = new AtomicBoolean(false);
 
+    private final AtomicBoolean isPlaylist = new AtomicBoolean(false);
+
     private final List<String> _thumbnailUrls = new CopyOnWriteArrayList<>();
     private final List<String> _lastCommandLine = new CopyOnWriteArrayList<>();
 
@@ -200,6 +203,10 @@ public class QueueEntry implements ICheckpointable<Long> {
         downloaders = downloadersIn;
 
         mediaCard.setUrlHint(url);
+
+        if (originalFilter instanceof YoutubePlaylistFilter) {
+            setPlaylist(true);
+        }
     }
 
     public AbstractUrlFilter getFilter() {
@@ -656,12 +663,11 @@ public class QueueEntry implements ICheckpointable<Long> {
     }
 
     public boolean isPlaylist() {
-        MediaInfo mediaInfo = getMediaInfo();
-        if (mediaInfo == null) {
-            return false;
-        }
+        return isPlaylist.get();
+    }
 
-        return notNullOrEmpty(mediaInfo.getPlaylistTitle());
+    public void setPlaylist(boolean playlist) {
+        isPlaylist.set(playlist);
     }
 
     public void setMediaInfo(MediaInfo mediaInfo) {
@@ -678,6 +684,7 @@ public class QueueEntry implements ICheckpointable<Long> {
 
         if (notNullOrEmpty(mediaInfo.getPlaylistTitle())) {
             logOutput("Playlist Title: " + mediaInfo.getPlaylistTitle());
+            setPlaylist(true);
         }
 
         if (nullOrEmpty(mediaInfo.getHostDisplayName())) {
@@ -1197,7 +1204,7 @@ public class QueueEntry implements ICheckpointable<Long> {
             int videoMediaCount = 0;
 
             for (File file : finalMediaFiles) {
-                if (file.isFile()) {
+                if (file.isFile()) {// TODO: CappedActionMenuEntry -> limit these calls to a sane ceiling
                     if (addMediaAction(file, VideoContainerEnum.class, "gui.play_video")) {
                         videoMediaCount++;
                     }
@@ -1339,6 +1346,7 @@ public class QueueEntry implements ICheckpointable<Long> {
 
         entity.setDownloadStarted(getDownloadStarted().get());
         entity.setDownloadSkipped(getDownloadSkipped().get());
+        entity.setPlaylist(isPlaylist());
         // Runtime properties, do not save.
         //entity.setCancelHook(getCancelHook().get());
         //entity.setRunning(isRunning());
@@ -1427,6 +1435,7 @@ public class QueueEntry implements ICheckpointable<Long> {
 
         queueEntry.getDownloadStarted().set(entity.isDownloadStarted());
         queueEntry.getDownloadSkipped().set(entity.isDownloadSkipped());
+        queueEntry.setPlaylist(entity.isPlaylist());
         //queueEntry.getCancelHook().set(entity.isCancelHook());
         //queueEntry.getRunning().set(entity.isRunning());
         queueEntry.getRetryCounter().set(entity.getRetryCounter());

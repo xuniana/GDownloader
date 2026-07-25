@@ -47,6 +47,7 @@ public final class CustomMediaCardUI {
 
     public static final int THUMBNAIL_WIDTH = 170;
     public static final int THUMBNAIL_HEIGHT = (int)(THUMBNAIL_WIDTH / 16.0 * 9.0);
+    private static final double SCALE_EPSILON = 0.001;
 
     private final GUIManager manager;
     private final JFrame parent;
@@ -84,6 +85,8 @@ public final class CustomMediaCardUI {
     private JButton moreButton;
 
     private JWindow moreOptionsWindow;
+
+    private double currentScale = Double.NaN;
 
     private final AtomicReference<StartButtonState> startButtonState = new AtomicReference<>();
 
@@ -411,6 +414,13 @@ public final class CustomMediaCardUI {
         if (parent.getWidth() <= 0 || parent.getHeight() <= 0) {
             return; // this is noise, ignore.
         }
+
+        if (!Double.isNaN(currentScale)
+            && Math.abs(currentScale - factor) < SCALE_EPSILON) {
+            return;
+        }
+
+        currentScale = factor;
 
         Dimension thumbDimension = new Dimension(
             (int)(THUMBNAIL_WIDTH * factor),
