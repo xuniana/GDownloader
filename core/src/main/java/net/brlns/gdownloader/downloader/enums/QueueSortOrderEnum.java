@@ -28,6 +28,9 @@ import static net.brlns.gdownloader.util.StringUtils.nullOrEmpty;
  */
 @Getter
 public enum QueueSortOrderEnum implements ISettingsEnum {
+    NATURAL("enums.sort_order.natural",
+        Comparator.comparing(QueueEntry::getCurrentSequence,
+            Comparator.nullsLast(Long::compareTo))),
     URL("enums.sort_order.url",
         Comparator.comparing(QueueEntry::getUrl)),
     URL_REVERSE("enums.sort_order.url_reverse",

@@ -941,7 +941,7 @@ public final class GUIManager implements AutoCloseable {
             l10n("gui.sort_by"),
             l10n("gui.toolbar.clear_sort.tooltip"),
             chip -> showRightClickMenu(chip, buildSortByMenuEntries(), 0, chip.getHeight()),
-            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.SEQUENCE)
+            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.NATURAL)
         );
 
         filterChip = new CustomDropdownChip(
@@ -967,7 +967,7 @@ public final class GUIManager implements AutoCloseable {
 
     private void refreshSortChip() {
         QueueSortOrderEnum current = main.getDownloadManager().getSortOrder();
-        boolean active = current != QueueSortOrderEnum.SEQUENCE;
+        boolean active = current != QueueSortOrderEnum.NATURAL;
 
         sortChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.sort_by"), active);
 

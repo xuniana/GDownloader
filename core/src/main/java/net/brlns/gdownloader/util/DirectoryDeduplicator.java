@@ -20,8 +20,6 @@ import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
@@ -40,7 +38,7 @@ public class DirectoryDeduplicator {
     private static final LRUCache<File, String> HASH_CACHE = new LRUCache<>(2000);
 
     /**
-     * Deduplicates the specified directory using SHA-256.
+     * Deduplicates the specified directory using XXHash64
      *
      * Deletes files with duplicate content and removes empty directories.
      */
@@ -66,9 +64,9 @@ public class DirectoryDeduplicator {
     }
 
     /**
-     * Traverse the directory, compute SHA-256 for each file, and delete duplicates.
+     * Traverse the directory, compute XXHash64 for each file, and delete duplicates.
      */
-    private static boolean traverseDirectory(File directory, Set<String> fileHashes) throws IOException, NoSuchAlgorithmException {
+    private static boolean traverseDirectory(File directory, Set<String> fileHashes) throws IOException {
         File[] files = directory.listFiles();
         if (files == null) {
             return false;
@@ -107,25 +105,25 @@ public class DirectoryDeduplicator {
     }
 
     /**
-     * Calculates the SHA-256 hash of a file.
+     * Calculates the XXHash64 hash of a file.
      */
     private static String getFileHash(File file) throws RuntimeException {
         return HASH_CACHE.computeIfAbsent(file, (key) -> {
             try {
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                XXHash64 digest = new XXHash64(0);
                 // Use a buffered reader with a generous buffer size to avoid some nasty I/O trashing here
                 try (BufferedInputStream bis
                     = new BufferedInputStream(new FileInputStream(key))) {
                     byte[] byteArray = new byte[BUFFER_SIZE];
+
                     int bytesRead;
                     while ((bytesRead = bis.read(byteArray)) != -1) {
                         digest.update(byteArray, 0, bytesRead);
                     }
                 }
 
-                byte[] hashBytes = digest.digest();
-                return StringUtils.bytesToHex(hashBytes);
-            } catch (NoSuchAlgorithmException | IOException e) {
+                return String.format("%016x", digest.digest());
+            } catch (IOException e) {
                 throw new RuntimeException(e);
             }
         });
