@@ -141,6 +141,8 @@ public class MediaCardGridLayout implements LayoutManager {
         synchronized (parent.getTreeLock()) {
             int currentWidth = parent.getWidth();
 
+            applyBounds(parent);
+
             if (!(lastWidth == -1 || forceLayout || lastWidth == currentWidth)) {
                 lastWidth = currentWidth;
                 debounceTimer.restart();
@@ -150,8 +152,6 @@ public class MediaCardGridLayout implements LayoutManager {
 
             lastWidth = currentWidth;
             forceLayout = false;
-
-            applyBounds(parent);
         }
     }
 

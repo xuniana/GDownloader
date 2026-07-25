@@ -42,6 +42,7 @@ import net.brlns.gdownloader.downloader.structs.FormatInfo;
 import net.brlns.gdownloader.downloader.structs.MediaInfo;
 import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.IEvent;
+import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.filters.AbstractUrlFilter;
 import net.brlns.gdownloader.filters.GenericFilter;
 import net.brlns.gdownloader.filters.YoutubeFilter;
@@ -1054,10 +1055,18 @@ public class DownloadManager implements IEvent, AutoCloseable {
     }
 
     public void setSortOrder(QueueSortOrderEnum sortOrder) {
+        QueueSortOrderEnum previous = sequencer.getCurrentSortOrder();
+
         sequencer.setSortOrder(sortOrder);
 
         main.getGuiManager().getMediaCardManager()
             .reorderMediaCards(getSortedMediaCardIds());
+
+        if (previous != sortOrder) {
+            EventDispatcher.dispatch(QueueSortOrderChangedEvent.builder()
+                .sortOrder(sortOrder)
+                .build());
+        }
     }
 
     public QueueSortOrderEnum getSortOrder() {

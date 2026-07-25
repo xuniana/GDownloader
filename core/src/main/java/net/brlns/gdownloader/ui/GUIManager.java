@@ -50,6 +50,8 @@ import net.brlns.gdownloader.downloader.enums.QueueSortOrderEnum;
 import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.impl.ConnectivityStatusEvent;
 import net.brlns.gdownloader.event.impl.PerformUpdateCheckEvent;
+import net.brlns.gdownloader.event.impl.QueueFilterChangedEvent;
+import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.event.impl.SettingsChangeEvent;
 import net.brlns.gdownloader.settings.Settings;
 import net.brlns.gdownloader.system.ShutdownRegistry.CloseBefore;
@@ -128,6 +130,10 @@ public final class GUIManager implements AutoCloseable {
     private CustomOverflowArea overflowArea;
     private JPanel toolbarPanel;
     private int toolbarBaseWidth = -1;
+
+    private CustomCollapsiblePanel sortFilterBar;
+    private CustomDropdownChip sortChip;
+    private CustomDropdownChip filterChip;
 
     private final AtomicBoolean initialQueueRenderComplete = new AtomicBoolean();
 
@@ -287,7 +293,7 @@ public final class GUIManager implements AutoCloseable {
                     appWindow.setAlwaysOnTop(main.getConfig().isKeepWindowAlwaysOnTop());
                 }
 
-                mediaCardManager.updateVisibleCards();
+                resizeDebouncer.trigger();
             });
 
             appWindow.addWindowListener(new WindowAdapter() {
@@ -894,10 +900,21 @@ public final class GUIManager implements AutoCloseable {
             buttonPanel.add(settingsButton);
         }
 
+        sortFilterBar = createSortFilterBar();
+
         gbc.gridx = 2;
         gbc.gridy = 0;
-        gbc.anchor = GridBagConstraints.EAST;
+        gbc.anchor = GridBagConstraints.CENTER;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.weightx = 1.0;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        topPanel.add(sortFilterBar, gbc);
+
+        gbc.gridx = 3;
+        gbc.gridy = 0;
+        gbc.anchor = GridBagConstraints.EAST;
+        gbc.fill = GridBagConstraints.NONE;
+        gbc.weightx = 0.0;
         gbc.insets = new Insets(0, 0, 0, 0);
         topPanel.add(buttonPanel, gbc);
 
@@ -914,6 +931,58 @@ public final class GUIManager implements AutoCloseable {
         return topPanel;
     }
 
+    private CustomCollapsiblePanel createSortFilterBar() {
+        CustomCollapsiblePanel bar = new CustomCollapsiblePanel(
+            new CustomWrapLayout(FlowLayout.CENTER, 10, 4));
+
+        sortChip = new CustomDropdownChip(
+            "/assets/sort.png",
+            l10n("gui.toolbar.sort_by"),
+            l10n("gui.sort_by"),
+            l10n("gui.toolbar.clear_sort.tooltip"),
+            chip -> showRightClickMenu(chip, buildSortByMenuEntries(), 0, chip.getHeight()),
+            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.SEQUENCE)
+        );
+
+        filterChip = new CustomDropdownChip(
+            "/assets/filter.png",
+            l10n("gui.toolbar.filter_by"),
+            l10n("gui.filter_by"),
+            l10n("gui.toolbar.clear_filter.tooltip"),
+            chip -> showRightClickMenu(chip, buildFilterByMenuEntries(), 0, chip.getHeight()),
+            () -> mediaCardManager.setStatusFilter(QueueFilterEnum.ALL)
+        );
+
+        bar.add(sortChip);
+        bar.add(filterChip);
+
+        refreshSortChip();
+        refreshFilterChip();
+
+        EventDispatcher.registerEDT(QueueSortOrderChangedEvent.class, event -> refreshSortChip());
+        EventDispatcher.registerEDT(QueueFilterChangedEvent.class, event -> refreshFilterChip());
+
+        return bar;
+    }
+
+    private void refreshSortChip() {
+        QueueSortOrderEnum current = main.getDownloadManager().getSortOrder();
+        boolean active = current != QueueSortOrderEnum.SEQUENCE;
+
+        sortChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.sort_by"), active);
+
+        updateOverflowLayout();
+    }
+
+    private void refreshFilterChip() {
+        QueueFilterEnum current = mediaCardManager.getStatusFilter();
+        boolean active = current != QueueFilterEnum.ALL;
+
+        filterChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.filter_by"), active);
+
+        updateOverflowLayout();
+    }
+
     private void updateOverflowLayout() {
         if (toolbarPanel == null || overflowArea == null) {
             return;
@@ -925,6 +994,25 @@ public final class GUIManager implements AutoCloseable {
 
         int availableWidth = toolbarPanel.getWidth() - toolbarBaseWidth;
         overflowArea.layout(Math.max(0, availableWidth));
+
+        updateSortFilterBarVisibility();
+    }
+
+    private void updateSortFilterBarVisibility() {
+        if (sortFilterBar == null) {
+            return;
+        }
+
+        int buffer = 24;
+
+        int currentContribution = sortFilterBar.isCollapsed()
+            ? 0 : sortFilterBar.getExpandedPreferredSize().width;
+
+        int requiredWithoutBar = toolbarPanel.getPreferredSize().width - currentContribution;
+        int neededWidth = requiredWithoutBar
+            + sortFilterBar.getExpandedPreferredSize().width + buffer;
+
+        sortFilterBar.setCollapsed(toolbarPanel.getWidth() < neededWidth);
     }
 
     private void confirmClearQueue() {
