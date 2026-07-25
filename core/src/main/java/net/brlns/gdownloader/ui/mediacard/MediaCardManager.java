@@ -100,12 +100,15 @@ public final class MediaCardManager {
     private List<Integer> filteredIds = new ArrayList<>();
     private final Map<Integer, MediaCardPanel> renderedCards = new LinkedHashMap<>();
 
+    private int lastProcessedWindowWidth = -1;
+
     private int lastFirstIndex = -1;
     private int lastLastIndex = -1;
     private boolean visibleWindowRendered;
 
     private int lastLayoutColumns = -1;
     private int lastLayoutRowHeight = -1;
+    private int lastLayoutViewportHeight = -1;
     private boolean adjustingScroll;
 
     private int cachedRowHeight = -1;
@@ -398,7 +401,9 @@ public final class MediaCardManager {
         int id = mediaCardId.incrementAndGet();
 
         MediaCard mediaCard = new MediaCard(id);
-        mediaCard.adjustScale(manager.getAppWindow().getWidth());
+        int windowWidth = manager.getAppWindow().getWidth();
+        int screenWidth = manager.getAppWindow().getGraphicsConfiguration().getBounds().width;
+        mediaCard.adjustScale(windowWidth, screenWidth);
         mediaCard.setLabel(mediaLabel);
         mediaCards.put(id, mediaCard);
 
@@ -597,15 +602,21 @@ public final class MediaCardManager {
                 return;
             }
 
-            invalidateRowHeightCache();
-
             int windowWidth = manager.getAppWindow().getWidth();
+            int screenWidth = manager.getAppWindow().getGraphicsConfiguration().getBounds().width;
+
+            if (Math.abs(windowWidth - lastProcessedWindowWidth) <= 5) {
+                return;
+            }
+            lastProcessedWindowWidth = windowWidth;
+
+            invalidateRowHeightCache();
 
             for (Component component : mediaQueuePane.getComponents()) {
                 if (component instanceof MediaCardPanel panel) {
                     MediaCard card = panel.getMediaCard();
                     if (card != null) {
-                        card.adjustScale(windowWidth);
+                        card.adjustScale(windowWidth, screenWidth);
 
                         CustomMediaCardUI ui = card.getUi();
                         if (ui != null) {
@@ -670,7 +681,9 @@ public final class MediaCardManager {
             );
         }
 
-        measurementUi.updateScale(MediaCard.computeScale(manager.getAppWindow().getWidth()));
+        int windowWidth = manager.getAppWindow().getWidth();
+        int screenWidth = manager.getAppWindow().getGraphicsConfiguration().getBounds().width;
+        measurementUi.updateScale(MediaCard.computeScale(windowWidth, screenWidth));
 
         cachedRowHeight = Math.max(1, measurementUi.getCard().getPreferredSize().height);
 
@@ -704,6 +717,7 @@ public final class MediaCardManager {
             lastLastIndex = -1;
             lastLayoutColumns = -1;
             lastLayoutRowHeight = -1;
+            lastLayoutViewportHeight = -1;
             visibleWindowRendered = true;
 
             mediaQueuePane.setSize(viewportWidth, 0);
@@ -787,6 +801,7 @@ public final class MediaCardManager {
 
         lastLayoutColumns = columns;
         lastLayoutRowHeight = rowHeight;
+        lastLayoutViewportHeight = viewRect.height;
     }
 
     @Nullable
@@ -805,9 +820,11 @@ public final class MediaCardManager {
 
         int oldColumns = lastLayoutColumns;
         int oldRowHeight = lastLayoutRowHeight;
+        int oldViewportHeight = lastLayoutViewportHeight > 0
+            ? lastLayoutViewportHeight : viewRect.height;
         int oldTotalRows = Math.max(1, (itemCount + oldColumns - 1) / oldColumns);
         int oldContentHeight = oldTotalRows * oldRowHeight;
-        int oldMaxScrollY = Math.max(0, oldContentHeight - viewRect.height);
+        int oldMaxScrollY = Math.max(0, oldContentHeight - oldViewportHeight);
 
         int newContentHeight = newTotalRows * newRowHeight;
         int newMaxScrollY = Math.max(0, newContentHeight - viewRect.height);
@@ -854,7 +871,9 @@ public final class MediaCardManager {
     }
 
     private MediaCardPanel materializeCard(MediaCard mediaCard) {
-        mediaCard.adjustScale(manager.getAppWindow().getWidth());
+        int windowWidth = manager.getAppWindow().getWidth();
+        int screenWidth = manager.getAppWindow().getGraphicsConfiguration().getBounds().width;
+        mediaCard.adjustScale(windowWidth, screenWidth);
 
         CustomMediaCardUI ui = new CustomMediaCardUI(manager, manager.getAppWindow(), () -> {
             if (isMediaCardSelected(mediaCard.getId())) {

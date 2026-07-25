@@ -29,7 +29,6 @@ import net.brlns.gdownloader.downloader.enums.CloseReasonEnum;
 import net.brlns.gdownloader.downloader.enums.DownloadPriorityEnum;
 import net.brlns.gdownloader.downloader.enums.DownloadTypeEnum;
 import net.brlns.gdownloader.downloader.enums.QueueCategoryEnum;
-import net.brlns.gdownloader.ui.ScreenMetrics;
 import net.brlns.gdownloader.ui.custom.CustomMediaCardUI;
 import net.brlns.gdownloader.ui.menu.IMenuEntry;
 
@@ -105,15 +104,15 @@ public class MediaCard {
         uiRef.set(null);
     }
 
-    public static double computeScale(int panelWidth) {
-        double screenWidth = ScreenMetrics.getPrimaryScreenBounds().getWidth();
+    // TODO: card should be calculating this on its own to prevent desync
+    public static double computeScale(int panelWidth, int screenWidth) {
         double targetWidth = screenWidth * 0.9;
 
         return (panelWidth >= targetWidth) ? 1.2 : 1;
     }
 
-    public void adjustScale(int panelWidth) {
-        scale = computeScale(panelWidth);
+    public void adjustScale(int panelWidth, int screenWidth) {
+        scale = computeScale(panelWidth, screenWidth);
         updateUI(SCALE);
     }
 
