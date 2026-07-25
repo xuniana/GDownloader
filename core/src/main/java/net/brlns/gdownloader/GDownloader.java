@@ -136,6 +136,7 @@ import static net.brlns.gdownloader.util.StringUtils.notNullOrEmpty;
 // TODO Direct-HTTP: resume chunked
 // TODO Direct-HTTP: post-processors (unzip, convert, etc)
 // TODO Direct-HTTP: metadata extractors for host resolvers
+// TODO Rest API for browser-level requests (url add/remove, batch updates, start/stop)
 /**
  * GDownloader - GUI wrapper for yt-dlp
  *
@@ -266,7 +267,7 @@ public final class GDownloader {
         ffmpegTranscoder = closeable(new FFmpegTranscoder(processMonitor));
         clipboardManager = new ClipboardManager(this);
         downloadManager = closeable(new DownloadManager(this));
-        guiManager = new GUIManager(this);
+        guiManager = closeable(new GUIManager(this));
         systemTrayManager = new SystemTrayManager(this);
 
         connectivityListener = closeable(new NetworkConnectivityListener(() -> config.getProxySettings()));

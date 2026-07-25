@@ -42,16 +42,19 @@ import net.brlns.gdownloader.downloader.structs.FormatInfo;
 import net.brlns.gdownloader.downloader.structs.MediaInfo;
 import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.IEvent;
+import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.filters.AbstractUrlFilter;
 import net.brlns.gdownloader.filters.GenericFilter;
 import net.brlns.gdownloader.filters.YoutubeFilter;
 import net.brlns.gdownloader.filters.YoutubePlaylistFilter;
+import net.brlns.gdownloader.persistence.CheckpointTracker;
 import net.brlns.gdownloader.persistence.PersistenceManager;
 import net.brlns.gdownloader.persistence.entity.CounterTypeEnum;
 import net.brlns.gdownloader.persistence.entity.DownloadHistoryEntity;
 import net.brlns.gdownloader.persistence.entity.QueueEntryEntity;
 import net.brlns.gdownloader.process.ProcessMonitor;
 import net.brlns.gdownloader.settings.enums.PlayListOptionEnum;
+import net.brlns.gdownloader.system.ShutdownRegistry;
 import net.brlns.gdownloader.system.ShutdownRegistry.CloseBefore;
 import net.brlns.gdownloader.system.taskbar.ITaskbarManager.TaskbarState;
 import net.brlns.gdownloader.system.taskbar.TaskbarManager;
@@ -128,6 +131,8 @@ public class DownloadManager implements IEvent, AutoCloseable {
 
     private final LRUCache<String, Long> recentlyDeletedUrls = new LRUCache<>(1000);
 
+    private final CheckpointTracker<Long> queueEntryCheckpoints = new CheckpointTracker<>();
+
     @SuppressWarnings("this-escape")
     public DownloadManager(GDownloader mainIn) {
         main = mainIn;
@@ -154,7 +159,7 @@ public class DownloadManager implements IEvent, AutoCloseable {
                 && main.getConfig().isRestoreSessionAfterRestart()) {
                 ToastMessenger.show(Message.builder()
                     .message("gui.restoring_session.toast")
-                    .durationMillis(5000)
+                    .durationMillis(4000)
                     .messageType(MessageTypeEnum.INFO)
                     .discardDuplicates(true)
                     .build());
@@ -218,6 +223,9 @@ public class DownloadManager implements IEvent, AutoCloseable {
                         }
 
                         initializeAndEnqueueEntry(queueEntry);
+
+                        queueEntryCheckpoints.markClean(queueEntry);
+
                         count++;
                     }
 
@@ -674,12 +682,42 @@ public class DownloadManager implements IEvent, AutoCloseable {
     }
 
     private void saveCheckpoint(QueueEntry queueEntry) {
-        if (persistence.isInitialized()) {
-            persistence.getQueueEntries().upsert(queueEntry.toEntity());
+        if (!persistence.isInitialized()) {
+            return;
+        }
+
+        if (!queueEntryCheckpoints.isDirty(queueEntry)) {
+            return;
+        }
+
+        if (persistence.getQueueEntries().upsert(queueEntry.toEntity())) {
+            queueEntryCheckpoints.markClean(queueEntry);
+        }
+    }
+
+    private void saveCheckpoints(List<QueueEntry> queueEntries) {
+        if (!persistence.isInitialized() || queueEntries.isEmpty()) {
+            return;
+        }
+
+        List<QueueEntry> dirtyEntries = queueEntryCheckpoints.filterDirty(queueEntries);
+        if (dirtyEntries.isEmpty()) {
+            return;
+        }
+
+        List<QueueEntryEntity> entities = new ArrayList<>(dirtyEntries.size());
+        for (QueueEntry dirtyEntry : dirtyEntries) {
+            entities.add(dirtyEntry.toEntity());
+        }
+
+        if (persistence.getQueueEntries().upsertAll(entities)) {
+            queueEntryCheckpoints.markAllClean(dirtyEntries);
         }
     }
 
     private void deleteCheckpoint(QueueEntry queueEntry) {
+        queueEntryCheckpoints.forget(queueEntry.getCheckpointKey());
+
         if (persistence.isInitialized()) {
             persistence.getQueueEntries().remove(queueEntry.getDownloadId());
         }
@@ -809,6 +847,10 @@ public class DownloadManager implements IEvent, AutoCloseable {
     }
 
     private void fireListeners() {
+        if (!initialized.get() || ShutdownRegistry.isClosed()) {
+            return;
+        }
+
         EventDispatcher.dispatch(this);
     }
 
@@ -1024,11 +1066,15 @@ public class DownloadManager implements IEvent, AutoCloseable {
     }
 
     public void clearQueue(QueueCategoryEnum category, CloseReasonEnum reason, boolean fireListeners) {
-        sequencer.removeAll(category, (entry) -> {
-            if (reason == CloseReasonEnum.SHUTDOWN && !entry.getCancelHook().get()) {
-                saveCheckpoint(entry);
-            }
+        if (reason == CloseReasonEnum.SHUTDOWN) {
+            List<QueueEntry> toCheckpoint = sequencer.getEntries(category).stream()
+                .filter(entry -> !entry.getCancelHook().get())
+                .collect(Collectors.toList());
 
+            saveCheckpoints(toCheckpoint);
+        }
+
+        sequencer.removeAll(category, (entry) -> {
             entry.dispose(reason);
         });
 
@@ -1049,10 +1095,18 @@ public class DownloadManager implements IEvent, AutoCloseable {
     }
 
     public void setSortOrder(QueueSortOrderEnum sortOrder) {
+        QueueSortOrderEnum previous = sequencer.getCurrentSortOrder();
+
         sequencer.setSortOrder(sortOrder);
 
         main.getGuiManager().getMediaCardManager()
             .reorderMediaCards(getSortedMediaCardIds());
+
+        if (previous != sortOrder) {
+            EventDispatcher.dispatch(QueueSortOrderChangedEvent.builder()
+                .sortOrder(sortOrder)
+                .build());
+        }
     }
 
     public QueueSortOrderEnum getSortOrder() {

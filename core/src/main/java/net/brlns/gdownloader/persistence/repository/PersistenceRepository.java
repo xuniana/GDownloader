@@ -73,6 +73,30 @@ public class PersistenceRepository<K, T> extends AbstractRepository {
         }
     }
 
+    public boolean upsertAll(List<T> entities) {
+        if (entities.isEmpty()) {
+            return true;
+        }
+
+        if (log.isTraceEnabled()) {
+            log.trace("Upsert All: {}", entities);
+        }
+
+        try (EntityManager em = getEmf().createEntityManager()) {
+            em.getTransaction().begin();
+
+            for (T entity : entities) {
+                em.merge(entity);
+            }
+
+            em.getTransaction().commit();
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to upsert entities", e);
+            return false;
+        }
+    }
+
     public boolean upsert(T entity) {
         if (log.isTraceEnabled()) {
             log.trace("Upsert: {}", entity);

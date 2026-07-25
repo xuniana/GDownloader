@@ -24,15 +24,16 @@ import com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.Persistence;
 import java.io.File;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.brlns.gdownloader.GDownloader;
-import net.brlns.gdownloader.persistence.entity.CounterTypeEnum;
 import net.brlns.gdownloader.persistence.repository.CounterRepository;
 import net.brlns.gdownloader.persistence.repository.DownloadHistoryRepository;
 import net.brlns.gdownloader.persistence.repository.MediaInfoRepository;
@@ -125,7 +126,8 @@ public class PersistenceManager implements AutoCloseable {
                 + "file:" + databaseFile + ";"
                 + "sql.syntax_pgs=true;"
                 + "hsqldb.lob_compressed=true;"
-                + "hsqldb.script_format=3");
+                + "hsqldb.script_format=3;"
+                + "hsqldb.default_table_type=cached");
 
             emf = Persistence.createEntityManagerFactory("hsqldbPU", properties);
 
@@ -139,10 +141,26 @@ public class PersistenceManager implements AutoCloseable {
 
             initHistoryDatabase();
 
-            GLOBAL_THREAD_POOL.execute(() -> {
-                // Prime the db by preloading some random item before the updaters even fire up
-                counters.getCurrentValue(CounterTypeEnum.DOWNLOAD_ID);
-            });
+            boolean needsMigration = !firstBoot && !main.getConfig().isPersistenceDatabaseMigratedToCached();
+
+            if (needsMigration) {
+                log.info("Legacy configuration detected. Migrating database tables to CACHED format...");
+
+                GLOBAL_THREAD_POOL.execute(() -> {
+                    try {
+                        convertToCachedTables(emf);
+                        if (historyInitialized) {
+                            convertToCachedTables(historyEmf);
+                        }
+
+                        main.getConfig().setPersistenceDatabaseMigratedToCached(true);
+                        main.updateConfig();
+                        log.info("Database migration completed.");
+                    } catch (Exception e) {
+                        log.error("Failed to execute background database optimizations", e);
+                    }
+                });
+            }
 
             log.info("{} db is now open", databaseFile);
             initialized = true;
@@ -165,7 +183,8 @@ public class PersistenceManager implements AutoCloseable {
                 + "file:" + historyDatabaseFile + ";"
                 + "sql.syntax_pgs=true;"
                 + "hsqldb.lob_compressed=true;"
-                + "hsqldb.script_format=3");
+                + "hsqldb.script_format=3;"
+                + "hsqldb.default_table_type=cached");
 
             historyEmf = Persistence.createEntityManagerFactory("historyPU", historyProperties);
 
@@ -179,6 +198,35 @@ public class PersistenceManager implements AutoCloseable {
             log.info("{} history db is now open", historyDatabaseFile);
         } catch (Exception e) {
             log.error("Cannot initialize download history database, history disabled.", e);
+        }
+    }
+
+    private void convertToCachedTables(EntityManagerFactory factory) {
+        EntityManager em = factory.createEntityManager();
+        try {
+            em.getTransaction().begin();
+
+            @SuppressWarnings("unchecked")
+            List<String> memoryTables = em.createNativeQuery(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.SYSTEM_TABLES "
+                + "WHERE TABLE_TYPE = 'TABLE' AND HSQLDB_TYPE = 'MEMORY' "
+                + "AND TABLE_SCHEM = 'PUBLIC'"
+            ).getResultList();
+
+            for (String tableName : memoryTables) {
+                log.info("Converting table {} to CACHED format...", tableName);
+                em.createNativeQuery("SET TABLE \"" + tableName + "\" TYPE CACHED").executeUpdate();
+            }
+
+            em.getTransaction().commit();
+        } catch (Exception e) {
+            log.warn("Failed to execute CACHED table migration", e);
+
+            if (em.getTransaction().isActive()) {
+                em.getTransaction().rollback();
+            }
+        } finally {
+            em.close();
         }
     }
 

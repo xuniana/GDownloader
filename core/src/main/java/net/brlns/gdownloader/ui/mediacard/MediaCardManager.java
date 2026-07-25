@@ -32,11 +32,15 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,8 +54,11 @@ import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import net.brlns.gdownloader.GDownloader;
 import net.brlns.gdownloader.downloader.enums.CloseReasonEnum;
+import net.brlns.gdownloader.downloader.enums.QueueFilterEnum;
 import net.brlns.gdownloader.event.EventDispatcher;
+import net.brlns.gdownloader.event.impl.QueueFilterChangedEvent;
 import net.brlns.gdownloader.event.impl.SettingsChangeEvent;
+import net.brlns.gdownloader.system.ShutdownRegistry;
 import net.brlns.gdownloader.ui.GUIManager;
 import net.brlns.gdownloader.ui.custom.CustomMediaCardUI;
 import net.brlns.gdownloader.ui.custom.CustomMediaCardUI.MediaCardPanel;
@@ -63,12 +70,16 @@ import static net.brlns.gdownloader.ui.UIUtils.runOnEDT;
 import static net.brlns.gdownloader.ui.UIUtils.scrollPaneToBottom;
 import static net.brlns.gdownloader.ui.themes.ThemeProvider.color;
 import static net.brlns.gdownloader.ui.themes.UIColors.*;
+import static net.brlns.gdownloader.util.StringUtils.containsIgnoreCase;
 
 /**
  * @author Gabriel / hstr0100 / vertx010
  */
 @Slf4j
 public final class MediaCardManager {
+
+    private static final int RENDER_BUFFER_PX = 600;
+    private static final int SCROLL_BOTTOM_EPSILON_PX = 4;
 
     private final GDownloader main;
     private final GUIManager manager;
@@ -82,6 +93,17 @@ public final class MediaCardManager {
     private final Queue<MediaCardUIUpdateEntry> mediaCardUIUpdateQueue = new ConcurrentLinkedQueue<>();
     private final Map<Integer, MediaCard> mediaCards = new ConcurrentHashMap<>();
 
+    private final List<Integer> orderedIds = new ArrayList<>();
+    private List<Integer> filteredIds = new ArrayList<>();
+    private final Map<Integer, MediaCardPanel> renderedCards = new LinkedHashMap<>();
+
+    private int lastFirstIndex = -1;
+    private int lastLastIndex = -1;
+    private boolean visibleWindowRendered;
+
+    private int cachedRowHeight = -1;
+    private CustomMediaCardUI measurementUi;
+
     private final AtomicReference<MediaCardPanel> hoveredCardPanel = new AtomicReference<>();
     private final AtomicReference<Point> lastMouseScreenPoint = new AtomicReference<>();
     private AWTEventListener globalMouseListener;
@@ -90,28 +112,52 @@ public final class MediaCardManager {
     private final AtomicReference<MediaCard> lastSelectedMediaCard = new AtomicReference<>(null);
     private final AtomicBoolean isMultiSelectMode = new AtomicBoolean();
 
-    private final MediaCardGridLayout mediaCardGridLayout = new MediaCardGridLayout();
+    private final MediaCardGridLayout mediaCardGridLayout;
 
     private final AtomicReference<String> currentSearchQuery = new AtomicReference<>("");
+    private final AtomicReference<QueueFilterEnum> currentStatusFilter = new AtomicReference<>(QueueFilterEnum.ALL);
+    private final AtomicReference<Consumer<Integer>> matchCountListener = new AtomicReference<>();
 
     private JScrollPane queueScrollPane;
+
+    private final Timer mediaCardQueueTimer;
 
     public MediaCardManager(GDownloader mainIn, GUIManager managerIn) {
         main = mainIn;
         manager = managerIn;
 
-        Timer mediaCardQueueTimer = new Timer(50, e -> processMediaCardQueue());
-        mediaCardQueueTimer.start();
+        mediaCardGridLayout = new MediaCardGridLayout(
+            () -> filteredIds.size(),
+            this::getRowHeight,
+            () -> updateVisibleWindow(true));
 
-        Timer visibilityCheckTimer = new Timer(150, e -> checkViewportVisibility());
-        visibilityCheckTimer.start();
+        mediaCardQueueTimer = new Timer(50, e -> processMediaCardQueue());
+        mediaCardQueueTimer.start();
 
         EventDispatcher.registerEDT(SettingsChangeEvent.class, (event) -> {
             int newPreference = event.getSettings().getMaxDownloadQueueColumns();
             if (newPreference != mediaCardGridLayout.getColumnPreference()) {
                 setColumnLayoutPreference(newPreference);
             }
+
+            invalidateRowHeightCache();
+            updateVisibleWindow(true);
         });
+    }
+
+    @PreDestroy
+    public void close() {
+        if (mediaCardQueueTimer != null) {
+            mediaCardQueueTimer.stop();
+        }
+
+        synchronized (mediaCardUIUpdateQueue) {
+            mediaCardUIUpdateQueue.clear();
+        }
+    }
+
+    public int getRenderedCardCount() {
+        return renderedCards.size();
     }
 
     public void initializeQueueScrollPane(JScrollPane scrollPane) {
@@ -167,7 +213,10 @@ public final class MediaCardManager {
     }
 
     private void onViewportScrolled() {
-        SwingUtilities.invokeLater(this::recomputeHover);
+        assert SwingUtilities.isEventDispatchThread();
+
+        updateVisibleWindow(false);
+        recomputeHover();
     }
 
     private void recomputeHover() {
@@ -268,6 +317,8 @@ public final class MediaCardManager {
 
         runOnEDT(() -> {
             if (mediaQueuePane != null) {
+                updateVisibleWindow(true);
+
                 mediaQueuePane.revalidate();
                 mediaQueuePane.repaint();
             }
@@ -343,6 +394,10 @@ public final class MediaCardManager {
     }
 
     public void removeMediaCard(int id, CloseReasonEnum reason) {
+        if (ShutdownRegistry.isClosed()) {
+            return;
+        }
+
         MediaCard mediaCard = mediaCards.remove(id);
 
         if (mediaCard != null) {
@@ -359,7 +414,13 @@ public final class MediaCardManager {
     }
 
     public boolean hasPendingUIUpdates() {
-        return !mediaCardUIUpdateQueue.isEmpty() || currentlyUpdatingMediaCards.get();
+        boolean queuePending = !mediaCardUIUpdateQueue.isEmpty() || currentlyUpdatingMediaCards.get();
+
+        if (mediaCards.isEmpty()) {
+            return queuePending;
+        }
+
+        return queuePending || !visibleWindowRendered;
     }
 
     public boolean isMediaCardSelected(MediaCard card) {
@@ -371,16 +432,7 @@ public final class MediaCardManager {
     }
 
     public void selectAllMediaCards() {
-        List<Integer> visibleCardIds = new ArrayList<>();
-        for (MediaCard mediaCard : mediaCards.values()) {
-            CustomMediaCardUI ui = mediaCard.getUi();
-
-            if (ui != null && ui.getCard().isVisible()) {
-                visibleCardIds.add(mediaCard.getId());
-            }
-        }
-
-        selectedMediaCards.replaceAll(visibleCardIds);
+        selectedMediaCards.replaceAll(filteredIds);
 
         updateMediaCardSelectionState();
     }
@@ -402,24 +454,20 @@ public final class MediaCardManager {
     }
 
     private void updateMediaCardSelectionState() {
-        for (MediaCard mediaCard : mediaCards.values()) {
-            boolean isSelected = isMediaCardSelected(mediaCard);
-
-            CustomMediaCardUI ui = mediaCard.getUi();
-            if (ui != null) {
-                ui.getCard().setBackground(isSelected
-                    ? color(MEDIA_CARD_SELECTED) : color(MEDIA_CARD));
+        for (MediaCardPanel panel : renderedCards.values()) {
+            MediaCard card = panel.getMediaCard();
+            if (card == null) {
+                continue;
             }
+
+            panel.setBackground(isMediaCardSelected(card)
+                ? color(MEDIA_CARD_SELECTED) : color(MEDIA_CARD));
         }
     }
 
     private void selectMediaCardRange(MediaCard start, MediaCard end) {
-        if (start.getUi() == null || end.getUi() == null) {
-            throw new IllegalStateException("Expected MediaCard UI to be initialized");
-        }
-
-        int startIndex = getComponentIndex(start.getUi().getCard());
-        int endIndex = getComponentIndex(end.getUi().getCard());
+        int startIndex = orderedIds.indexOf(start.getId());
+        int endIndex = orderedIds.indexOf(end.getId());
 
         if (startIndex == -1 || endIndex == -1) {
             return;
@@ -428,21 +476,15 @@ public final class MediaCardManager {
         int minIndex = Math.min(startIndex, endIndex);
         int maxIndex = Math.max(startIndex, endIndex);
 
+        Set<Integer> filteredLookup = new HashSet<>(filteredIds);
+
         List<Integer> cardsToAdd = new ArrayList<>();
         for (int i = minIndex; i <= maxIndex; i++) {
-            MediaCard card = getMediaCardAt(i);
+            int id = orderedIds.get(i);
 
-            if (card == null) {
-                log.error("Cannot find card for index {}", i);
-                continue;
+            if (filteredLookup.contains(id)) {
+                cardsToAdd.add(id);
             }
-
-            CustomMediaCardUI cardUi = card.getUi();
-            if (cardUi == null || !cardUi.getCard().isVisible()) {
-                continue;
-            }
-
-            cardsToAdd.add(card.getId());
         }
 
         selectedMediaCards.replaceAll(cardsToAdd);
@@ -471,96 +513,45 @@ public final class MediaCardManager {
             boolean scrollToBottom = false;
 
             try {
+                LinkedHashSet<Integer> added = new LinkedHashSet<>();
+                Set<Integer> removed = new HashSet<>();
+
                 int count = 0;
-                while (!mediaCardUIUpdateQueue.isEmpty()) {
-                    if (++count == 40) {// Process in batches of 40 items every 100ms
+
+                MediaCardUIUpdateEntry entry;
+                while ((entry = mediaCardUIUpdateQueue.poll()) != null) {
+                    if (++count == 1000) {// Process in batches of 1000 items every 100ms
                         break;
                     }
 
-                    MediaCardUIUpdateEntry entry = mediaCardUIUpdateQueue.poll();
-                    if (entry == null) {
-                        continue;
-                    }
-
-                    MediaCard mediaCard = entry.getMediaCard();
+                    int id = entry.getMediaCard().getId();
 
                     if (entry.getUpdateType() == CARD_ADD) {
-                        CustomMediaCardUI ui = new CustomMediaCardUI(manager, manager.getAppWindow(), () -> {
-                            if (isMediaCardSelected(mediaCard.getId())) {
-                                deleteSelectedMediaCards();
-                            }
-
-                            removeMediaCard(mediaCard.getId(), CloseReasonEnum.MANUAL);
-                        },
-                            () -> Optional.of(mediaCard.getOnInfoClick())
-                                .ifPresent(runnable -> runnable.run()),
-                            () -> Optional.of(mediaCard.getOnStartClick())
-                                .ifPresent(runnable -> runnable.run()),
-                            () -> Optional.of(mediaCard.getOnFormatsClick())
-                                .ifPresent(runnable -> runnable.run())
-                        );
-
-                        mediaCard.setUi(ui);
-
-                        MediaCardPanel card = ui.getCard();
-                        card.setTransferHandler(new WindowTransferHandler(manager));
-
-                        MouseAdapter listener = new MediaCardMouseAdapter(mediaCard);
-                        card.addMouseListener(listener);
-                        ui.getDragLabel().addMouseListener(listener);
-                        ui.getMediaNameLabel().addMouseListener(listener);
-
-                        ui.getInfoButton().addMouseListener(new MouseAdapter() {
-                            @Override
-                            public void mouseEntered(MouseEvent e) {
-                                if (mediaCard.getOnInfoHover() != null) {
-                                    mediaCard.getOnInfoHover().accept(true);
-                                }
-                            }
-
-                            @Override
-                            public void mouseExited(MouseEvent e) {
-                                if (mediaCard.getOnInfoHover() != null) {
-                                    mediaCard.getOnInfoHover().accept(false);
-                                }
-                            }
-                        });
-
-                        card.setMediaCard(mediaCard);
-
-                        String currentQuery = currentSearchQuery.get();
-                        if (!currentQuery.isEmpty()) {
-                            boolean visible = matchesSearch(mediaCard, currentQuery);
-                            card.setVisible(visible);
-                        }
-
-                        mediaQueuePane.add(card);
-
-                        card.revalidate();
-                        ui.getMediaNameLabel().updateTruncatedText();
-
+                        added.add(id);
                         scrollToBottom = true;
-                    } else if (entry.getUpdateType() == CARD_REMOVE) {
-                        CustomMediaCardUI ui = mediaCard.getUi();
-                        if (ui != null) {
-                            hoveredCardPanel.compareAndSet(ui.getCard(), null);
+                    } else if (!added.remove(id)) {
+                        removed.add(id);
+                    }
+                }
 
-                            try {
-                                if (mediaCards.isEmpty()) {
-                                    mediaQueuePane.removeAll();
-                                } else {
-                                    mediaQueuePane.remove(ui.getCard());
-                                }
-                            } catch (StackOverflowError e) {
-                                // Decades-old AWT issue. We should not have to raise the stack limit for this.
-                                // AWTEventMulticaster.remove(AWTEventMulticaster.java:153)
-                                // AWTEventMulticaster.removeInternal(AWTEventMulticaster.java:983)
-                                // Rinse and repeat ∞
-                                GDownloader.handleException(e, "StackOverflowError when calling remove() or removeComponentListener().");
-                            }
+                if (!removed.isEmpty()) {
+                    orderedIds.removeIf(removed::contains);
+
+                    for (int id : removed) {
+                        MediaCardPanel panel = renderedCards.remove(id);
+                        if (panel != null) {
+                            hoveredCardPanel.compareAndSet(panel, null);
+                            mediaQueuePane.remove(panel);
                         }
                     }
                 }
+
+                if (!added.isEmpty()) {
+                    orderedIds.addAll(added);
+                }
+
+                recomputeFilteredIds();
+                updateVisibleWindow(true);
             } finally {
                 lastMediaCardQueueUpdate.set(System.currentTimeMillis());
                 currentlyUpdatingMediaCards.set(false);
@@ -589,10 +580,12 @@ public final class MediaCardManager {
                 return;
             }
 
+            invalidateRowHeightCache();
+
             int windowWidth = manager.getAppWindow().getWidth();
 
             for (Component component : mediaQueuePane.getComponents()) {
-                if (component.isVisible() && component instanceof MediaCardPanel panel) {
+                if (component instanceof MediaCardPanel panel) {
                     MediaCard card = panel.getMediaCard();
                     if (card != null) {
                         card.adjustScale(windowWidth);
@@ -605,121 +598,292 @@ public final class MediaCardManager {
                     }
                 }
             }
+
+            updateVisibleWindow(true);
+
+            mediaQueuePane.revalidate();
+            mediaQueuePane.repaint();
         });
     }
 
-    private void checkViewportVisibility() {
-        if (queueScrollPane == null || mediaQueuePane == null) {
+    private void recomputeFilteredIds() {
+        String query = currentSearchQuery.get();
+        QueueFilterEnum statusFilter = currentStatusFilter.get();
+
+        List<Integer> next = new ArrayList<>(orderedIds.size());
+
+        for (int id : orderedIds) {
+            MediaCard card = mediaCards.get(id);
+            if (card == null) {
+                continue;
+            }
+
+            if ((query.isEmpty() || matchesSearch(card, query)) && statusFilter.matches(card.getCategory())) {
+                next.add(id);
+            }
+        }
+
+        filteredIds = next;
+
+        Consumer<Integer> listener = matchCountListener.get();
+        if (listener != null) {
+            listener.accept(next.size());
+        }
+    }
+
+    private int getRowHeight() {
+        if (cachedRowHeight > 0) {
+            return cachedRowHeight;
+        }
+
+        if (measurementUi == null) {
+            measurementUi = new CustomMediaCardUI(manager, manager.getAppWindow(),
+                () -> {
+                    // no-op
+                },
+                () -> {
+                    // no-op
+                },
+                () -> {
+                    // no-op
+                },
+                () -> {
+                    // no-op
+                }
+            );
+        }
+
+        measurementUi.updateScale(MediaCard.computeScale(manager.getAppWindow().getWidth()));
+
+        cachedRowHeight = Math.max(1, measurementUi.getCard().getPreferredSize().height);
+
+        return cachedRowHeight;
+    }
+
+    private void invalidateRowHeightCache() {
+        cachedRowHeight = -1;
+    }
+
+    private void updateVisibleWindow(boolean force) {
+        if (mediaQueuePane == null || queueScrollPane == null) {
             return;
         }
 
-        runOnEDT(() -> {
-            Rectangle viewRect = queueScrollPane.getViewport().getViewRect();
-            int buffer = (int)(viewRect.height * 2.5);
+        int viewportWidth = queueScrollPane.getViewport().getWidth();
+        if (viewportWidth <= 0) {
+            return;
+        }
 
-            int exX = viewRect.x;
-            int exY = viewRect.y - buffer;
-            int exMaxX = exX + viewRect.width;
-            int exMaxY = exY + viewRect.height + buffer * 2;
+        boolean wasScrolledToBottom = isScrolledToBottom();
 
-            List<Runnable> toRefresh = null;
-            int componentCount = mediaQueuePane.getComponentCount();
+        int total = filteredIds.size();
 
-            for (int i = 0; i < componentCount; i++) {
-                Component component = mediaQueuePane.getComponent(i);
+        if (total == 0) {
+            if (!force && renderedCards.isEmpty() && lastFirstIndex == -1) {
+                return;
+            }
 
-                if (!(component instanceof MediaCardPanel panel) || !component.isVisible()) {
+            clearRenderedCards();
+
+            lastFirstIndex = -1;
+            lastLastIndex = -1;
+            visibleWindowRendered = true;
+
+            mediaQueuePane.setSize(viewportWidth, 0);
+            mediaQueuePane.revalidate();
+            mediaQueuePane.repaint();
+            return;
+        }
+
+        int rowHeight = Math.max(1, getRowHeight());
+        int columns = mediaCardGridLayout.determineColumns(viewportWidth, total);
+        int totalRows = (total + columns - 1) / columns;
+
+        Rectangle viewRect = queueScrollPane.getViewport().getViewRect();
+
+        int firstRow = Math.max(0, (viewRect.y - RENDER_BUFFER_PX) / rowHeight);
+        int lastRow = Math.min(totalRows - 1, (viewRect.y + viewRect.height + RENDER_BUFFER_PX) / rowHeight);
+        firstRow = Math.min(firstRow, lastRow);
+
+        int firstIndex = firstRow * columns;
+        int lastIndex = Math.min(total - 1, (lastRow + 1) * columns - 1);
+
+        if (!force && firstIndex == lastFirstIndex && lastIndex == lastLastIndex) {
+            return;
+        }
+
+        lastFirstIndex = firstIndex;
+        lastLastIndex = lastIndex;
+
+        Set<Integer> nextVisible = new HashSet<>();
+
+        for (int i = firstIndex; i <= lastIndex; i++) {
+            int id = filteredIds.get(i);
+            nextVisible.add(id);
+
+            MediaCardPanel panel = renderedCards.get(id);
+            if (panel == null) {
+                MediaCard card = mediaCards.get(id);
+                if (card == null) {
                     continue;
                 }
 
-                MediaCard card = panel.getMediaCard();
-                if (card == null || card.getOnBecomeVisible() == null) {
-                    continue;
-                }
+                panel = materializeCard(card);
+                renderedCards.put(id, panel);
+            }
 
-                int cX = component.getX();
-                int cY = component.getY();
-                int cMaxX = cX + component.getWidth();
-                int cMaxY = cY + component.getHeight();
+            panel.putClientProperty(MediaCardGridLayout.VIRTUAL_INDEX_PROPERTY, i);
+        }
 
-                if (cX < exMaxX && cMaxX > exX && cY < exMaxY && cMaxY > exY) {
-                    if (toRefresh == null) {
-                        toRefresh = new ArrayList<>();
-                    }
+        Iterator<Map.Entry<Integer, MediaCardPanel>> it = renderedCards.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Integer, MediaCardPanel> e = it.next();
 
-                    toRefresh.add(card.getOnBecomeVisible());
+            if (!nextVisible.contains(e.getKey())) {
+                dematerialize(e.getKey(), e.getValue());
+                it.remove();
+            }
+        }
+
+        visibleWindowRendered = true;
+
+        mediaQueuePane.setSize(viewportWidth, totalRows * rowHeight);
+        mediaQueuePane.doLayout();
+        mediaQueuePane.revalidate();
+        mediaQueuePane.repaint();
+
+        if (wasScrolledToBottom) {
+            scrollPaneToBottom(queueScrollPane);
+        }
+    }
+
+    private boolean isScrolledToBottom() {
+        JScrollBar verticalBar = queueScrollPane.getVerticalScrollBar();
+        if (verticalBar == null || !verticalBar.isVisible()) {
+            return false;
+        }
+
+        return verticalBar.getValue() + verticalBar.getVisibleAmount()
+            >= verticalBar.getMaximum() - SCROLL_BOTTOM_EPSILON_PX;
+    }
+
+    private void clearRenderedCards() {
+        if (renderedCards.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<Integer, MediaCardPanel> e : renderedCards.entrySet()) {
+            dematerialize(e.getKey(), e.getValue());
+        }
+
+        renderedCards.clear();
+    }
+
+    private void dematerialize(int id, MediaCardPanel panel) {
+        hoveredCardPanel.compareAndSet(panel, null);
+        mediaQueuePane.remove(panel);
+
+        MediaCard card = mediaCards.get(id);
+        if (card != null) {
+            card.clearUi();
+        }
+    }
+
+    private MediaCardPanel materializeCard(MediaCard mediaCard) {
+        mediaCard.adjustScale(manager.getAppWindow().getWidth());
+
+        CustomMediaCardUI ui = new CustomMediaCardUI(manager, manager.getAppWindow(), () -> {
+            if (isMediaCardSelected(mediaCard.getId())) {
+                deleteSelectedMediaCards();
+            }
+
+            removeMediaCard(mediaCard.getId(), CloseReasonEnum.MANUAL);
+        },
+            () -> Optional.ofNullable(mediaCard.getOnInfoClick())
+                .ifPresent(runnable -> runnable.run()),
+            () -> Optional.ofNullable(mediaCard.getOnStartClick())
+                .ifPresent(runnable -> runnable.run()),
+            () -> Optional.ofNullable(mediaCard.getOnFormatsClick())
+                .ifPresent(runnable -> runnable.run())
+        );
+
+        MediaCardPanel card = ui.getCard();
+        card.setTransferHandler(new WindowTransferHandler(manager));
+        card.setMediaCard(mediaCard);
+
+        mediaCard.setUi(ui);
+
+        MouseAdapter listener = new MediaCardMouseAdapter(mediaCard);
+        card.addMouseListener(listener);
+        ui.getDragLabel().addMouseListener(listener);
+        ui.getMediaNameLabel().addMouseListener(listener);
+
+        ui.getInfoButton().addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseEntered(MouseEvent e) {
+                if (mediaCard.getOnInfoHover() != null) {
+                    mediaCard.getOnInfoHover().accept(true);
                 }
             }
 
-            if (toRefresh != null) {
-                final List<Runnable> finalToRefresh = toRefresh;
-                GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
-                    for (Runnable runnable : finalToRefresh) {
-                        runnable.run();
-                    }
-                });
+            @Override
+            public void mouseExited(MouseEvent e) {
+                if (mediaCard.getOnInfoHover() != null) {
+                    mediaCard.getOnInfoHover().accept(false);
+                }
             }
         });
+
+        card.setBackground(isMediaCardSelected(mediaCard)
+            ? color(MEDIA_CARD_SELECTED) : color(MEDIA_CARD));
+
+        mediaQueuePane.add(card);
+
+        ui.getMediaNameLabel().updateTruncatedText();
+
+        Runnable becomeVisible = mediaCard.getOnBecomeVisible();
+        if (becomeVisible != null) {
+            GDownloader.GLOBAL_THREAD_POOL.execute(becomeVisible);
+        }
+
+        return card;
     }
 
     public boolean handleMediaCardDnD(MediaCard mediaCard, Component dropTarget) {
-        CustomMediaCardUI ui = mediaCard.getUi();
+        Rectangle windowBounds = manager.getAppWindow().getBounds();
+        Point dropLocation = dropTarget.getLocationOnScreen();
 
-        if (ui != null) {
-            MediaCardPanel sourcePanel = ui.getCard();
-            Rectangle windowBounds = manager.getAppWindow().getBounds();
-            Point dropLocation = dropTarget.getLocationOnScreen();
+        if (windowBounds.contains(dropLocation)
+            && dropTarget instanceof MediaCardPanel targetPanel) {
 
-            if (windowBounds.contains(dropLocation)
-                && dropTarget instanceof MediaCardPanel targetPanel) {
-                MediaCard targetCard = targetPanel.getMediaCard();
-                if (targetCard != null && targetCard.getDropTargetValidator().get()) {
-                    if (mediaCard.getOnSwap() != null) {
-                        mediaCard.getOnSwap().accept(targetCard);
-                    }
+            MediaCard targetCard = targetPanel.getMediaCard();
 
-                    runOnEDT(() -> {
-                        int targetIndex = getComponentIndex(targetPanel);
-
-                        mediaQueuePane.remove(sourcePanel);
-                        mediaQueuePane.add(sourcePanel, targetIndex);
-                        mediaQueuePane.revalidate();
-                        mediaQueuePane.repaint();
-                    });
+            if (targetCard != null && targetCard.getDropTargetValidator().get()) {
+                if (mediaCard.getOnSwap() != null) {
+                    mediaCard.getOnSwap().accept(targetCard);
                 }
 
-                return true;
+                runOnEDT(() -> {
+                    int targetIndex = orderedIds.indexOf(targetCard.getId());
+                    if (targetIndex < 0) {
+                        return;
+                    }
+
+                    orderedIds.remove(Integer.valueOf(mediaCard.getId()));
+                    orderedIds.add(targetIndex, mediaCard.getId());
+
+                    recomputeFilteredIds();
+                    updateVisibleWindow(true);
+
+                    mediaQueuePane.revalidate();
+                    mediaQueuePane.repaint();
+                });
             }
+
+            return true;
         }
 
         return false;
-    }
-
-    private int getComponentIndex(Component component) {
-        Component[] components = mediaQueuePane.getComponents();
-        for (int i = 0; i < components.length; i++) {
-            if (components[i] == component) {
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
-    @Nullable
-    private MediaCard getMediaCardAt(int index) {
-        if (index < 0 || index >= mediaQueuePane.getComponents().length) {
-            log.error("Index {} is out of bounds", index);
-            return null;
-        }
-
-        Component component = mediaQueuePane.getComponents()[index];
-
-        if (component instanceof MediaCardPanel panel) {
-            return panel.getMediaCard();
-        }
-
-        return null;
     }
 
     public void reorderMediaCards(@NonNull List<Integer> newOrderIds) {
@@ -728,167 +892,82 @@ public final class MediaCardManager {
         }
 
         runOnEDT(() -> {
-            try {
-                mediaQueuePane.setIgnoreRepaint(true);
-
-                List<Component> components = new ArrayList<>();
-                Map<Integer, Component> idToComponentMap = new HashMap<>();
-                Map<Integer, Integer> currentOrderMap = new HashMap<>();
-
-                int index = 0;
-                for (Component component : mediaQueuePane.getComponents()) {
-                    if (component instanceof MediaCardPanel panel) {
-                        MediaCard card = panel.getMediaCard();
-                        if (card != null) {
-                            components.add(component);
-                            idToComponentMap.put(card.getId(), component);
-                            currentOrderMap.put(card.getId(), index++);
-                        } else {
-                            log.warn("A panel did not contain a media card reference");
-                        }
-                    }
+            for (Integer cardId : newOrderIds) {
+                if (!mediaCards.containsKey(cardId)) {
+                    log.warn("Media card with ID {} not found for reordering", cardId);
+                    return;
                 }
+            }
 
-                if (log.isDebugEnabled()) {
-                    log.debug("Found {} existing media card components, size reported by reorderer list: {}",
-                        components.size(), newOrderIds.size());
-                }
+            orderedIds.clear();
+            orderedIds.addAll(newOrderIds);
 
-                for (int i = 0; i < newOrderIds.size(); i++) {
-                    Integer cardId = newOrderIds.get(i);
+            recomputeFilteredIds();
+            updateVisibleWindow(true);
 
-                    if (!idToComponentMap.containsKey(cardId)) {
-                        // The UI is not kept in perfect sync with the sequencer.
-                        log.warn("Media card with ID {} not found for reordering", cardId);
-                        return;
-                    }
-                }
+            mediaQueuePane.revalidate();
+            mediaQueuePane.repaint();
 
-                List<Range> rangesToReorder = findOutOfOrderRanges(newOrderIds, currentOrderMap);
-                if (log.isDebugEnabled()) {
-                    log.debug("Found {} ranges that need reordering", rangesToReorder.size());
-                }
-
-                if (!rangesToReorder.isEmpty()) {
-                    for (Range range : rangesToReorder) {
-                        for (int i = range.getStart(); i <= range.getEnd(); i++) {
-                            Integer cardId = newOrderIds.get(i);
-                            Component component = idToComponentMap.get(cardId);
-                            if (component != null) {
-                                mediaQueuePane.remove(component);
-                            } else {
-                                log.warn("Component for media card ID {} not found", cardId);
-                            }
-                        }
-                    }
-
-                    int componentIndex = 0;
-                    for (int i = 0; i < newOrderIds.size(); i++) {
-                        Integer cardId = newOrderIds.get(i);
-                        Component component = idToComponentMap.get(cardId);
-
-                        if (isInAnyRange(i, rangesToReorder)) {
-                            if (component != null) {
-                                mediaQueuePane.add(component, componentIndex);
-                            } else {
-                                log.warn("Component for media card ID {} not found", cardId);
-                            }
-                        }
-
-                        componentIndex++;
-                    }
-
-                    mediaQueuePane.revalidate();
-                    mediaQueuePane.repaint();
-
-                    if (queueScrollPane.getViewport().getScrollMode()
-                        == JViewport.BACKINGSTORE_SCROLL_MODE) {
-                        queueScrollPane.getViewport().revalidate();
-                        queueScrollPane.getViewport().repaint();
-                    }
-
-                    if (!selectedMediaCards.isEmpty()) {
-                        updateMediaCardSelectionState();
-                    }
-                }
-            } catch (Exception e) {
-                GDownloader.handleException(e, "Failed to reorder UI cards", false);
-            } finally {
-                mediaQueuePane.setIgnoreRepaint(false);
+            if (!selectedMediaCards.isEmpty()) {
+                updateMediaCardSelectionState();
             }
         });
-    }
-
-    private List<Range> findOutOfOrderRanges(List<Integer> newOrderIds, Map<Integer, Integer> currentOrderMap) {
-        List<Range> ranges = new ArrayList<>();
-        int rangeStart = -1;
-        boolean inRange = false;
-
-        for (int i = 0; i < newOrderIds.size(); i++) {
-            Integer cardId = newOrderIds.get(i);
-            Integer currentIndex = currentOrderMap.get(cardId);
-
-            if (currentIndex == null || currentIndex != i) {
-                if (!inRange) {
-                    rangeStart = i;
-                    inRange = true;
-                }
-            } else if (inRange) {
-                ranges.add(new Range(rangeStart, i - 1));
-                inRange = false;
-            }
-        }
-
-        if (inRange) {
-            ranges.add(new Range(rangeStart, newOrderIds.size() - 1));
-        }
-
-        return ranges;
-    }
-
-    private boolean isInAnyRange(int index, List<Range> ranges) {
-        return ranges.stream().anyMatch(range -> range.inRange(index));
     }
 
     public int getMediaCardCount() {
         return mediaCards.size();
     }
 
+    public int getVisibleMediaCardCount() {
+        return filteredIds.size();
+    }
+
+    public boolean hasActiveSearchQuery() {
+        return !currentSearchQuery.get().isEmpty();
+    }
+
     public void filterMediaCards(@NonNull String query, @Nullable Consumer<Integer> onCountUpdate) {
         currentSearchQuery.set(query.trim().toLowerCase());
+        matchCountListener.set(onCountUpdate);
 
+        applyCardFilters();
+    }
+
+    public void setStatusFilter(@NonNull QueueFilterEnum filter) {
+        if (currentStatusFilter.getAndSet(filter) != filter) {
+            applyCardFilters();
+
+            EventDispatcher.dispatch(QueueFilterChangedEvent.builder()
+                .filter(filter)
+                .build());
+        }
+    }
+
+    public QueueFilterEnum getStatusFilter() {
+        return currentStatusFilter.get();
+    }
+
+    public void onMediaCardCategoryChanged() {
+        applyCardFilters();
+    }
+
+    private void applyCardFilters() {
         runOnEDT(() -> {
+            if (ShutdownRegistry.isClosed()) {
+                return;
+            }
+
             if (mediaQueuePane == null) {
                 return;
             }
 
-            int count = 0;
-            for (MediaCard card : mediaCards.values()) {
-                CustomMediaCardUI ui = card.getUi();
-                if (ui == null) {
-                    continue;
-                }
-
-                String currentQuery = currentSearchQuery.get();
-
-                boolean visible = currentQuery.isEmpty() || matchesSearch(card, currentQuery);
-                MediaCardPanel cardPanel = ui.getCard();
-
-                if (cardPanel.isVisible() != visible) {
-                    cardPanel.setVisible(visible);
-                }
-
-                if (visible) {
-                    count++;
-                }
-            }
+            recomputeFilteredIds();
+            updateVisibleWindow(true);
 
             mediaQueuePane.revalidate();
             mediaQueuePane.repaint();
 
-            if (onCountUpdate != null) {
-                onCountUpdate.accept(count);
-            }
+            manager.updateContentPane();
         });
     }
 
@@ -896,22 +975,17 @@ public final class MediaCardManager {
         String[] labels = card.getLabelText();
         if (labels != null) {
             for (String label : labels) {
-                if (label != null && label.toLowerCase().contains(query)) {
+                if (containsIgnoreCase(label, query)) {
                     return true;
                 }
             }
         }
 
-        if (card.getUrlHint().contains(query)) {
+        if (containsIgnoreCase(card.getUrlHint(), query)) {
             return true;
         }
 
-        String tooltip = card.getTooltipText();
-        if (tooltip != null && tooltip.toLowerCase().contains(query)) {
-            return true;
-        }
-
-        return false;
+        return containsIgnoreCase(card.getTooltipText(), query);
     }
 
     private class MediaCardMouseAdapter extends MouseAdapter {
@@ -1015,16 +1089,5 @@ public final class MediaCardManager {
 
         private final byte updateType;
         private final MediaCard mediaCard;
-    }
-
-    @Data
-    private static class Range {
-
-        private final int start;
-        private final int end;
-
-        public boolean inRange(int index) {
-            return index >= start && index <= end;
-        }
     }
 }

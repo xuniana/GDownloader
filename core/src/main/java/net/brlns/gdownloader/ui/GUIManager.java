@@ -17,6 +17,7 @@
 package net.brlns.gdownloader.ui;
 
 import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
 import java.awt.*;
 import java.awt.dnd.DragSource;
 import java.awt.dnd.DropTarget;
@@ -44,12 +45,16 @@ import net.brlns.gdownloader.downloader.DownloadManager;
 import net.brlns.gdownloader.downloader.enums.CloseReasonEnum;
 import net.brlns.gdownloader.downloader.enums.DownloaderIdEnum;
 import net.brlns.gdownloader.downloader.enums.QueueCategoryEnum;
+import net.brlns.gdownloader.downloader.enums.QueueFilterEnum;
 import net.brlns.gdownloader.downloader.enums.QueueSortOrderEnum;
 import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.impl.ConnectivityStatusEvent;
 import net.brlns.gdownloader.event.impl.PerformUpdateCheckEvent;
+import net.brlns.gdownloader.event.impl.QueueFilterChangedEvent;
+import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.event.impl.SettingsChangeEvent;
 import net.brlns.gdownloader.settings.Settings;
+import net.brlns.gdownloader.system.ShutdownRegistry.CloseBefore;
 import net.brlns.gdownloader.system.taskbar.TaskbarManager;
 import net.brlns.gdownloader.system.taskbar.Win32TaskbarIdentity;
 import net.brlns.gdownloader.ui.custom.*;
@@ -79,7 +84,8 @@ import static net.brlns.gdownloader.ui.themes.UIColors.*;
  * @author Gabriel / hstr0100 / vertx010
  */
 @Slf4j
-public final class GUIManager {
+@CloseBefore(before = {DownloadManager.class})
+public final class GUIManager implements AutoCloseable {
 
     static {
         CustomTooltipManager.install();
@@ -111,6 +117,8 @@ public final class GUIManager {
 
     private ContentPane currentContentPane;
     private JPanel emptyQueuePane;
+    private JPanel noMatchesPane;
+    private CustomDynamicLabel noMatchesLabel;
     private JPanel loadingQueuePane;
     private JPanel updaterPane;
 
@@ -122,6 +130,10 @@ public final class GUIManager {
     private CustomOverflowArea overflowArea;
     private JPanel toolbarPanel;
     private int toolbarBaseWidth = -1;
+
+    private CustomCollapsiblePanel sortFilterBar;
+    private CustomDropdownChip sortChip;
+    private CustomDropdownChip filterChip;
 
     private final AtomicBoolean initialQueueRenderComplete = new AtomicBoolean();
 
@@ -145,6 +157,12 @@ public final class GUIManager {
 
         resizeDebouncer = new ScreenMetrics.Debouncer(50,
             () -> mediaCardManager.updateVisibleCards());
+    }
+
+    @PreDestroy
+    @Override
+    public void close() {
+        mediaCardManager.close();
     }
 
     public String getCurrentAppIconPath() {
@@ -275,7 +293,7 @@ public final class GUIManager {
                     appWindow.setAlwaysOnTop(main.getConfig().isKeepWindowAlwaysOnTop());
                 }
 
-                mediaCardManager.updateVisibleCards();
+                resizeDebouncer.trigger();
             });
 
             appWindow.addWindowListener(new WindowAdapter() {
@@ -577,6 +595,44 @@ public final class GUIManager {
         mediaCardManager.filterMediaCards("", null);
     }
 
+    private RightClickMenuEntries buildSortByMenuEntries() {
+        RightClickMenuEntries menu = new RightClickMenuEntries();
+
+        for (QueueSortOrderEnum sortOrder : QueueSortOrderEnum.values()) {
+            menu.put(sortOrder.getDisplayName(),
+                new RunnableMenuEntry(
+                    () -> main.getDownloadManager().setSortOrder(sortOrder),
+                    () -> {
+                        QueueSortOrderEnum current = main.getDownloadManager().getSortOrder();
+                        return current == sortOrder
+                            ? "/assets/selected.png"
+                            : "/assets/not-selected.png";
+                    }
+                ));
+        }
+
+        return menu;
+    }
+
+    private RightClickMenuEntries buildFilterByMenuEntries() {
+        RightClickMenuEntries menu = new RightClickMenuEntries();
+
+        for (QueueFilterEnum filter : QueueFilterEnum.values()) {
+            menu.put(filter.getDisplayName(),
+                new RunnableMenuEntry(
+                    () -> mediaCardManager.setStatusFilter(filter),
+                    () -> {
+                        QueueFilterEnum current = mediaCardManager.getStatusFilter();
+                        return current == filter
+                            ? "/assets/selected.png"
+                            : "/assets/not-selected.png";
+                    }
+                ));
+        }
+
+        return menu;
+    }
+
     private JPanel createToolbar() {
         JPanel topPanel = new JPanel(new GridBagLayout());
         topPanel.setBorder(BorderFactory.createEmptyBorder(5, 0, 5, 0));
@@ -844,10 +900,21 @@ public final class GUIManager {
             buttonPanel.add(settingsButton);
         }
 
+        sortFilterBar = createSortFilterBar();
+
         gbc.gridx = 2;
         gbc.gridy = 0;
-        gbc.anchor = GridBagConstraints.EAST;
+        gbc.anchor = GridBagConstraints.CENTER;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.weightx = 1.0;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        topPanel.add(sortFilterBar, gbc);
+
+        gbc.gridx = 3;
+        gbc.gridy = 0;
+        gbc.anchor = GridBagConstraints.EAST;
+        gbc.fill = GridBagConstraints.NONE;
+        gbc.weightx = 0.0;
         gbc.insets = new Insets(0, 0, 0, 0);
         topPanel.add(buttonPanel, gbc);
 
@@ -864,6 +931,58 @@ public final class GUIManager {
         return topPanel;
     }
 
+    private CustomCollapsiblePanel createSortFilterBar() {
+        CustomCollapsiblePanel bar = new CustomCollapsiblePanel(
+            new CustomWrapLayout(FlowLayout.CENTER, 10, 4));
+
+        sortChip = new CustomDropdownChip(
+            "/assets/sort.png",
+            l10n("gui.toolbar.sort_by"),
+            l10n("gui.sort_by"),
+            l10n("gui.toolbar.clear_sort.tooltip"),
+            chip -> showRightClickMenu(chip, buildSortByMenuEntries(), 0, chip.getHeight()),
+            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.NATURAL)
+        );
+
+        filterChip = new CustomDropdownChip(
+            "/assets/filter.png",
+            l10n("gui.toolbar.filter_by"),
+            l10n("gui.filter_by"),
+            l10n("gui.toolbar.clear_filter.tooltip"),
+            chip -> showRightClickMenu(chip, buildFilterByMenuEntries(), 0, chip.getHeight()),
+            () -> mediaCardManager.setStatusFilter(QueueFilterEnum.ALL)
+        );
+
+        bar.add(sortChip);
+        bar.add(filterChip);
+
+        refreshSortChip();
+        refreshFilterChip();
+
+        EventDispatcher.registerEDT(QueueSortOrderChangedEvent.class, event -> refreshSortChip());
+        EventDispatcher.registerEDT(QueueFilterChangedEvent.class, event -> refreshFilterChip());
+
+        return bar;
+    }
+
+    private void refreshSortChip() {
+        QueueSortOrderEnum current = main.getDownloadManager().getSortOrder();
+        boolean active = current != QueueSortOrderEnum.NATURAL;
+
+        sortChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.sort_by"), active);
+
+        updateOverflowLayout();
+    }
+
+    private void refreshFilterChip() {
+        QueueFilterEnum current = mediaCardManager.getStatusFilter();
+        boolean active = current != QueueFilterEnum.ALL;
+
+        filterChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.filter_by"), active);
+
+        updateOverflowLayout();
+    }
+
     private void updateOverflowLayout() {
         if (toolbarPanel == null || overflowArea == null) {
             return;
@@ -875,6 +994,25 @@ public final class GUIManager {
 
         int availableWidth = toolbarPanel.getWidth() - toolbarBaseWidth;
         overflowArea.layout(Math.max(0, availableWidth));
+
+        updateSortFilterBarVisibility();
+    }
+
+    private void updateSortFilterBarVisibility() {
+        if (sortFilterBar == null) {
+            return;
+        }
+
+        int buffer = 24;
+
+        int currentContribution = sortFilterBar.isCollapsed()
+            ? 0 : sortFilterBar.getExpandedPreferredSize().width;
+
+        int requiredWithoutBar = toolbarPanel.getPreferredSize().width - currentContribution;
+        int neededWidth = requiredWithoutBar
+            + sortFilterBar.getExpandedPreferredSize().width + buffer;
+
+        sortFilterBar.setCollapsed(toolbarPanel.getWidth() < neededWidth);
     }
 
     private void confirmClearQueue() {
@@ -1049,7 +1187,14 @@ public final class GUIManager {
                     initialQueueRenderComplete.set(true);
                 }
 
-                switchContentPane(ContentPane.MAIN_QUEUE);
+                if (mediaCardManager.getVisibleMediaCardCount() == 0) {
+                    switchContentPane(ContentPane.NO_MATCHES);
+                } else {
+                    switchContentPane(ContentPane.MAIN_QUEUE);
+                }
+            } else if (mediaCardManager.getRenderedCardCount() > 0
+                || mediaCardManager.hasPendingUIUpdates()) {
+                switchContentPane(ContentPane.LOADING_QUEUE);
             } else {
                 switchContentPane(ContentPane.EMPTY_QUEUE);
             }
@@ -1075,6 +1220,8 @@ public final class GUIManager {
                 mediaCardManager.getOrCreateMediaQueuePanel();
             case EMPTY_QUEUE ->
                 getOrCreateEmptyQueuePanel();
+            case NO_MATCHES ->
+                getOrCreateNoMatchesPanel();
             case LOADING_QUEUE ->
                 getOrCreateLoadingQueuePanel();
             case UPDATER ->
@@ -1135,6 +1282,38 @@ public final class GUIManager {
         });
 
         return emptyQueuePane;
+    }
+
+    private JPanel getOrCreateNoMatchesPanel() {
+        if (noMatchesPane == null) {
+            noMatchesPane = new JPanel(new BorderLayout());
+            noMatchesPane.setOpaque(false);
+            noMatchesPane.setBorder(BorderFactory.createEmptyBorder(10, 0, 10, 0));
+            noMatchesPane.addMouseListener(defaultMouseAdapter);
+
+            noMatchesLabel = new CustomDynamicLabel();
+            noMatchesLabel.setHorizontalAlignment(SwingConstants.CENTER);
+            noMatchesLabel.setLineWrapping(false);
+            noMatchesLabel.setCenterText(true);
+            noMatchesLabel.setForeground(color(FOREGROUND));
+            noMatchesPane.add(noMatchesLabel, BorderLayout.CENTER);
+        }
+
+        boolean searchActive = mediaCardManager.hasActiveSearchQuery();
+        boolean filterActive = mediaCardManager.getStatusFilter() != QueueFilterEnum.ALL;
+
+        String message;
+        if (searchActive && filterActive) {
+            message = l10n("gui.no_matches_search_and_filter");
+        } else if (searchActive) {
+            message = l10n("gui.no_matches_search");
+        } else {
+            message = l10n("gui.no_matches_filter");
+        }
+
+        noMatchesLabel.setFullText(message);
+
+        return noMatchesPane;
     }
 
     private JPanel getOrCreateUpdaterPanel() {
@@ -1444,20 +1623,14 @@ public final class GUIManager {
                 }, () -> "/assets/add.png"));
 
             NestedMenuEntry sortSubmenu = new NestedMenuEntry(() -> "/assets/sort.png");
-            for (QueueSortOrderEnum sortOrder : QueueSortOrderEnum.values()) {
-                sortSubmenu.put(sortOrder.getDisplayName(),
-                    new RunnableMenuEntry(
-                        () -> main.getDownloadManager().setSortOrder(sortOrder),
-                        () -> {
-                            QueueSortOrderEnum current = main.getDownloadManager().getSortOrder();
-                            return current == sortOrder
-                                ? "/assets/selected.png"
-                                : "/assets/not-selected.png";
-                        }
-                    ));
-            }
+            sortSubmenu.putAll(buildSortByMenuEntries());
 
             rightClickMenu.putIfAbsent(l10n("gui.sort_by"), sortSubmenu);
+
+            NestedMenuEntry filterSubmenu = new NestedMenuEntry(() -> "/assets/filter.png");
+            filterSubmenu.putAll(buildFilterByMenuEntries());
+
+            rightClickMenu.putIfAbsent(l10n("gui.filter_by"), filterSubmenu);
 
             rightClickMenu.putIfAbsent(l10n("gui.search.tooltip"),
                 new RunnableMenuEntry(() -> showSearchBar(),
@@ -1505,6 +1678,7 @@ public final class GUIManager {
     private static enum ContentPane {
         MAIN_QUEUE,
         EMPTY_QUEUE,
+        NO_MATCHES,
         LOADING_QUEUE,
         UPDATER,
     }

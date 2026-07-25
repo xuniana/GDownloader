@@ -51,7 +51,7 @@ public class DownloadSequencer {
     private final EnumMap<QueueCategoryEnum, Set<Long>> categorySets = new EnumMap<>(QueueCategoryEnum.class);
 
     @Getter
-    private QueueSortOrderEnum currentSortOrder = QueueSortOrderEnum.SEQUENCE;
+    private QueueSortOrderEnum currentSortOrder = QueueSortOrderEnum.NATURAL;
 
     private final ReentrantLock sequencerLock = new ReentrantLock(true);
 
@@ -521,9 +521,11 @@ public class DownloadSequencer {
 
         @Override
         public int compareTo(EntryKey other) {
-            int priorityCmp = Integer.compare(other.getWeight(), getWeight());
-            if (priorityCmp != 0) {
-                return priorityCmp;
+            if (sortOrder != QueueSortOrderEnum.NATURAL) {
+                int priorityCmp = Integer.compare(other.getWeight(), getWeight());
+                if (priorityCmp != 0) {
+                    return priorityCmp;
+                }
             }
 
             int sortOrderCmp = sortOrder.getComparator()

@@ -27,7 +27,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,6 +34,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -47,7 +47,6 @@ import java.util.stream.Stream;
 import javax.swing.JFileChooser;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.extern.slf4j.Slf4j;
@@ -58,6 +57,8 @@ import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.EventDispatcher.LambdaHandler;
 import net.brlns.gdownloader.filters.AbstractUrlFilter;
 import net.brlns.gdownloader.filters.GenericFilter;
+import net.brlns.gdownloader.persistence.EntityFingerprint;
+import net.brlns.gdownloader.persistence.ICheckpointable;
 import net.brlns.gdownloader.persistence.PersistenceManager;
 import net.brlns.gdownloader.persistence.entity.QueueEntryEntity;
 import net.brlns.gdownloader.settings.enums.*;
@@ -92,8 +93,7 @@ import static net.brlns.gdownloader.util.StringUtils.nullOrEmpty;
 @Getter
 @EqualsAndHashCode
 @ToString
-@RequiredArgsConstructor
-public class QueueEntry {
+public class QueueEntry implements ICheckpointable<Long> {
 
     private final GDownloader main;
 
@@ -111,7 +111,7 @@ public class QueueEntry {
         = new AtomicReference<>(null);
 
     @Setter
-    private QueueSortOrderEnum temporarySortOrder = QueueSortOrderEnum.SEQUENCE;
+    private QueueSortOrderEnum temporarySortOrder = QueueSortOrderEnum.NATURAL;
 
     @Setter
     private Long currentSequence;
@@ -121,7 +121,6 @@ public class QueueEntry {
 
     private DownloadTypeEnum currentDownloadType;
 
-    @Setter
     private QueueCategoryEnum currentQueueCategory;
 
     private DownloadPriorityEnum downloadPriority
@@ -187,6 +186,21 @@ public class QueueEntry {
 
     private final Queue<String> pendingFormatQueue = new ConcurrentLinkedQueue<>();
     private final Set<String> uniquePendingFormats = ConcurrentHashMap.newKeySet();
+
+    public QueueEntry(GDownloader mainIn, MediaCard mediaCardIn, String filterIdIn,
+        AbstractUrlFilter originalFilterIn, String originalUrlIn, String urlIn,
+        long downloadIdIn, List<AbstractDownloader> downloadersIn) {
+        main = mainIn;
+        mediaCard = mediaCardIn;
+        filterId = filterIdIn;
+        originalFilter = originalFilterIn;
+        originalUrl = originalUrlIn;
+        url = urlIn;
+        downloadId = downloadIdIn;
+        downloaders = downloadersIn;
+
+        mediaCard.setUrlHint(url);
+    }
 
     public AbstractUrlFilter getFilter() {
         return main.getConfig().getUrlFilterById(filterId).orElse(originalFilter);
@@ -467,6 +481,14 @@ public class QueueEntry {
         currentDownloadType = typeIn;
 
         mediaCard.setPlaceholderIcon(typeIn);
+    }
+
+    public void setCurrentQueueCategory(QueueCategoryEnum categoryIn) {
+        currentQueueCategory = categoryIn;
+
+        mediaCard.setCategory(categoryIn);
+
+        main.getGuiManager().getMediaCardManager().onMediaCardCategoryChanged();
     }
 
     public void setDownloadPriority(DownloadPriorityEnum priorityIn) {
@@ -999,8 +1021,6 @@ public class QueueEntry {
 
         updateMediaRightClickOptions();
         updateExtraRightClickOptions();
-
-        mediaCard.setUrlHint(url);
     }
 
     public void updateExtraRightClickOptions() {
@@ -1270,7 +1290,25 @@ public class QueueEntry {
         });
     }
 
+    @Override
+    public Long getCheckpointKey() {
+        return downloadId;
+    }
+
+    @Override
+    public long checkpointFingerprint() {
+        return EntityFingerprint.of(toCheckpointEntity());
+    }
+
+    public QueueEntryEntity toCheckpointEntity() {
+        return buildEntity(false);
+    }
+
     public QueueEntryEntity toEntity() {
+        return buildEntity(true);
+    }
+
+    private QueueEntryEntity buildEntity(boolean forceLoadLazyFields) {
         QueueEntryEntity entity = new QueueEntryEntity();
 
         entity.setOriginalUrl(getOriginalUrl());
@@ -1281,8 +1319,10 @@ public class QueueEntry {
 
         entity.getDownloaderBlacklist().addAll(getDownloaderBlacklist());
 
-        if (getMediaInfo() != null) {
-            entity.setMediaInfo(getMediaInfo().toEntity(getDownloadId()));
+        if (forceLoadLazyFields || mediaInfoLoaded.get()) {
+            if (getMediaInfo() != null) {
+                entity.setMediaInfo(getMediaInfo().toEntity(getDownloadId()));
+            }
         }
 
         entity.setForcedDownloader(getForcedDownloader());
@@ -1314,21 +1354,34 @@ public class QueueEntry {
 
         entity.setMediaFilePaths(getFinalMediaFiles().stream()
             .map(File::getAbsolutePath)
+            .sorted()
             .collect(Collectors.toCollection(ArrayList::new)));
 
-        entity.setThumbnailUrls(new ArrayList<>(getThumbnailUrls()));
-        entity.setLastCommandLine(new ArrayList<>(getLastCommandLine()));
+        if (forceLoadLazyFields || thumbnailUrlsLoaded.get()) {
+            entity.setThumbnailUrls(new ArrayList<>(getThumbnailUrls()));
+        }
 
-        entity.setErrorLog(getErrorLog().snapshotAsList());
-        entity.setDownloadLog(getDownloadLog().snapshotAsList());
+        if (forceLoadLazyFields || lastCommandLineLoaded.get()) {
+            entity.setLastCommandLine(new ArrayList<>(getLastCommandLine()));
+        }
 
-        Map<String, Long> uploadTimesMillis = new HashMap<>();
-        getPlaylistItemUploadTimes().forEach((path, time) -> {
-            if (time != null) {
-                uploadTimesMillis.put(path, time.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
-            }
-        });
-        entity.setPlaylistItemUploadTimes(uploadTimesMillis);
+        if (forceLoadLazyFields || errorLogLoaded.get()) {
+            entity.setErrorLog(getErrorLog().snapshotAsList());
+        }
+
+        if (forceLoadLazyFields || downloadLogLoaded.get()) {
+            entity.setDownloadLog(getDownloadLog().snapshotAsList());
+        }
+
+        if (forceLoadLazyFields || playlistItemUploadTimesLoaded.get()) {
+            Map<String, Long> uploadTimesMillis = new TreeMap<>();
+            getPlaylistItemUploadTimes().forEach((path, time) -> {
+                if (time != null) {
+                    uploadTimesMillis.put(path, time.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+                }
+            });
+            entity.setPlaylistItemUploadTimes(uploadTimesMillis);
+        }
 
         return entity;
     }
