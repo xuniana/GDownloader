@@ -167,10 +167,18 @@ public class DownloadSequencer {
     public List<QueueEntry> getSnapshot() {
         sequencerLock.lock();
         try {
-            List<QueueEntry> snapshot = new ArrayList<>();
-            for (QueueEntry entry : priorityQueue.values()) {
-                snapshot.add(entry);
-            }
+            List<QueueEntry> snapshot = new ArrayList<>(entriesById.values());
+
+            Comparator<QueueEntry> displayComparator = currentSortOrder != QueueSortOrderEnum.SEQUENCE
+                ? currentSortOrder.getComparator()
+                : Comparator.comparingInt((QueueEntry e) -> e.getDownloadPriority().getWeight())
+                    .reversed()
+                    .thenComparing(currentSortOrder.getComparator());
+
+            snapshot.sort(displayComparator
+                .thenComparing(QueueEntry::getCurrentSequence,
+                    Comparator.nullsLast(Long::compareTo))
+                .thenComparingLong(QueueEntry::getDownloadId));
 
             return snapshot;
         } finally {
@@ -521,11 +529,9 @@ public class DownloadSequencer {
 
         @Override
         public int compareTo(EntryKey other) {
-            if (sortOrder != QueueSortOrderEnum.NATURAL) {
-                int priorityCmp = Integer.compare(other.getWeight(), getWeight());
-                if (priorityCmp != 0) {
-                    return priorityCmp;
-                }
+            int priorityCmp = Integer.compare(other.getWeight(), getWeight());
+            if (priorityCmp != 0) {
+                return priorityCmp;
             }
 
             int sortOrderCmp = sortOrder.getComparator()

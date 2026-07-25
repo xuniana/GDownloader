@@ -51,6 +51,7 @@ import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.impl.ConnectivityStatusEvent;
 import net.brlns.gdownloader.event.impl.PerformUpdateCheckEvent;
 import net.brlns.gdownloader.event.impl.QueueFilterChangedEvent;
+import net.brlns.gdownloader.event.impl.QueueLiveSortToggledEvent;
 import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.event.impl.SettingsChangeEvent;
 import net.brlns.gdownloader.settings.Settings;
@@ -941,7 +942,11 @@ public final class GUIManager implements AutoCloseable {
             l10n("gui.sort_by"),
             l10n("gui.toolbar.clear_sort.tooltip"),
             chip -> showRightClickMenu(chip, buildSortByMenuEntries(), 0, chip.getHeight()),
-            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.NATURAL)
+            () -> main.getDownloadManager().setSortOrder(QueueSortOrderEnum.NATURAL),
+            "/assets/refresh.png",
+            l10n("gui.toolbar.live_sort.tooltip"),
+            () -> main.getDownloadManager().isLiveSortEnabled(),
+            () -> main.getDownloadManager().setLiveSortEnabled(!main.getDownloadManager().isLiveSortEnabled())
         );
 
         filterChip = new CustomDropdownChip(
@@ -960,6 +965,7 @@ public final class GUIManager implements AutoCloseable {
         refreshFilterChip();
 
         EventDispatcher.registerEDT(QueueSortOrderChangedEvent.class, event -> refreshSortChip());
+        EventDispatcher.registerEDT(QueueLiveSortToggledEvent.class, event -> refreshSortChip());
         EventDispatcher.registerEDT(QueueFilterChangedEvent.class, event -> refreshFilterChip());
 
         return bar;
@@ -970,6 +976,7 @@ public final class GUIManager implements AutoCloseable {
         boolean active = current != QueueSortOrderEnum.NATURAL;
 
         sortChip.setState(active ? current.getDisplayName() : l10n("gui.toolbar.sort_by"), active);
+        sortChip.refreshLiveToggleState();
 
         updateOverflowLayout();
     }

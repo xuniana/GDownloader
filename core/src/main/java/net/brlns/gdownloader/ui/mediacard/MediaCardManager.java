@@ -81,6 +81,9 @@ public final class MediaCardManager {
     private static final int RENDER_BUFFER_PX = 600;
     private static final int COLUMN_CHANGE_BOTTOM_EPSILON_PX = 24;
 
+    private static final long LIVE_SORT_REFRESH_INTERVAL_MS = 500;
+    private static final long LIVE_SORT_MANUAL_DEBOUNCE_MS = 1500;
+
     private final GDownloader main;
     private final GUIManager manager;
 
@@ -126,6 +129,9 @@ public final class MediaCardManager {
 
     private final Timer mediaCardQueueTimer;
 
+    private final AtomicLong lastManualReorderTime = new AtomicLong();
+    private final AtomicLong lastLiveSortRefresh = new AtomicLong();
+
     public MediaCardManager(GDownloader mainIn, GUIManager managerIn) {
         main = mainIn;
         manager = managerIn;
@@ -135,7 +141,10 @@ public final class MediaCardManager {
             this::getRowHeight,
             () -> updateVisibleWindow(true));
 
-        mediaCardQueueTimer = new Timer(50, e -> processMediaCardQueue());
+        mediaCardQueueTimer = new Timer(50, e -> {
+            processMediaCardQueue();
+            maybeApplyLiveSort();
+        });
         mediaCardQueueTimer.start();
 
         EventDispatcher.registerEDT(SettingsChangeEvent.class, (event) -> {
@@ -927,6 +936,8 @@ public final class MediaCardManager {
                     orderedIds.remove(Integer.valueOf(mediaCard.getId()));
                     orderedIds.add(targetIndex, mediaCard.getId());
 
+                    lastManualReorderTime.set(System.currentTimeMillis());
+
                     recomputeFilteredIds();
                     updateVisibleWindow(true);
 
@@ -947,15 +958,32 @@ public final class MediaCardManager {
         }
 
         runOnEDT(() -> {
+            Set<Integer> seen = new HashSet<>();
+            List<Integer> resolved = new ArrayList<>(newOrderIds.size());
+
             for (Integer cardId : newOrderIds) {
                 if (!mediaCards.containsKey(cardId)) {
-                    log.warn("Media card with ID {} not found for reordering", cardId);
-                    return;
+                    log.warn("Media card with ID {} not found for reordering, skipping", cardId);
+                    continue;
+                }
+
+                if (seen.add(cardId)) {
+                    resolved.add(cardId);
                 }
             }
 
+            for (Integer existingId : orderedIds) {
+                if (seen.add(existingId)) {
+                    resolved.add(existingId);
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                return;
+            }
+
             orderedIds.clear();
-            orderedIds.addAll(newOrderIds);
+            orderedIds.addAll(resolved);
 
             recomputeFilteredIds();
             updateVisibleWindow(true);
@@ -967,6 +995,30 @@ public final class MediaCardManager {
                 updateMediaCardSelectionState();
             }
         });
+    }
+
+    private void maybeApplyLiveSort() {
+        if (mediaQueuePane == null || queueScrollPane == null
+            || !main.getDownloadManager().isLiveSortEnabled()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        if (now - lastManualReorderTime.get() < LIVE_SORT_MANUAL_DEBOUNCE_MS) {
+            return;
+        }
+
+        if (now - lastLiveSortRefresh.get() < LIVE_SORT_REFRESH_INTERVAL_MS) {
+            return;
+        }
+
+        lastLiveSortRefresh.set(now);
+
+        List<Integer> sortedIds = main.getDownloadManager().getSortedMediaCardIds();
+        if (!sortedIds.isEmpty() && !sortedIds.equals(orderedIds)) {
+            reorderMediaCards(sortedIds);
+        }
     }
 
     public int getMediaCardCount() {

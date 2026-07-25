@@ -16,6 +16,7 @@
  */
 package net.brlns.gdownloader.ui.custom;
 
+import jakarta.annotation.Nullable;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.FlowLayout;
@@ -25,6 +26,7 @@ import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import javax.swing.BorderFactory;
 import javax.swing.ImageIcon;
 import javax.swing.JLabel;
@@ -43,9 +45,15 @@ public class CustomDropdownChip extends JPanel {
 
     private final JLabel textLabel;
     private final JLabel clearLabel;
+    private final JLabel liveToggleLabel;
 
     private final ImageIcon clearIcon;
     private final ImageIcon clearIconHover;
+
+    private final ImageIcon liveToggleIcon;
+    private final ImageIcon liveToggleIconHover;
+    private final ImageIcon liveToggleIconActive;
+    private final Supplier<Boolean> liveToggleStateSupplier;
 
     private boolean hovered = false;
     private boolean active = false;
@@ -53,6 +61,15 @@ public class CustomDropdownChip extends JPanel {
     @SuppressWarnings("this-escape")
     public CustomDropdownChip(String iconAsset, String defaultText, String tooltipText,
         String clearTooltipText, Consumer<CustomDropdownChip> onOpen, Runnable onClear) {
+        this(iconAsset, defaultText, tooltipText, clearTooltipText, onOpen, onClear,
+            null, null, null, null);
+    }
+
+    @SuppressWarnings("this-escape")
+    public CustomDropdownChip(String iconAsset, String defaultText, String tooltipText,
+        String clearTooltipText, Consumer<CustomDropdownChip> onOpen, Runnable onClear,
+        @Nullable String liveToggleIconAsset, @Nullable String liveToggleTooltipText,
+        @Nullable Supplier<Boolean> liveToggleStateSupplierIn, @Nullable Runnable onLiveToggle) {
         super(new FlowLayout(FlowLayout.LEFT, 6, 0));
 
         setOpaque(false);
@@ -68,6 +85,49 @@ public class CustomDropdownChip extends JPanel {
         textLabel.setForeground(color(FOREGROUND));
         textLabel.setFont(textLabel.getFont().deriveFont(textLabel.getFont().getSize2D() + 1.4f));
         add(textLabel);
+
+        liveToggleStateSupplier = liveToggleStateSupplierIn;
+
+        if (liveToggleIconAsset != null) {
+            liveToggleIcon = loadIcon(liveToggleIconAsset, ICON, 12);
+            liveToggleIconHover = loadIcon(liveToggleIconAsset, ICON_HOVER, 12);
+            liveToggleIconActive = loadIcon(liveToggleIconAsset, ICON_ACTIVE, 12);
+
+            liveToggleLabel = new JLabel(liveToggleIcon);
+            liveToggleLabel.setOpaque(false);
+            liveToggleLabel.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 0));
+            liveToggleLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            liveToggleLabel.setToolTipText(liveToggleTooltipText);
+            liveToggleLabel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (onLiveToggle != null) {
+                        onLiveToggle.run();
+                    }
+
+                    refreshLiveToggleIcon(false);
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    refreshLiveToggleIcon(true);
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    refreshLiveToggleIcon(false);
+                }
+            });
+
+            add(liveToggleLabel);
+
+            refreshLiveToggleIcon(false);
+        } else {
+            liveToggleIcon = null;
+            liveToggleIconHover = null;
+            liveToggleIconActive = null;
+            liveToggleLabel = null;
+        }
 
         clearIcon = loadIcon("/assets/x-mark.png", ICON, 11);
         clearIconHover = loadIcon("/assets/x-mark.png", ICON_CLOSE, 11);
@@ -134,6 +194,22 @@ public class CustomDropdownChip extends JPanel {
 
     public boolean isActive() {
         return active;
+    }
+
+    public void refreshLiveToggleState() {
+        refreshLiveToggleIcon(false);
+    }
+
+    private void refreshLiveToggleIcon(boolean hoveredIn) {
+        if (liveToggleLabel == null) {
+            return;
+        }
+
+        boolean liveActive = liveToggleStateSupplier != null && liveToggleStateSupplier.get();
+
+        liveToggleLabel.setIcon(hoveredIn
+            ? liveToggleIconHover
+            : (liveActive ? liveToggleIconActive : liveToggleIcon));
     }
 
     @Override

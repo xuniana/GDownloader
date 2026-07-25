@@ -42,6 +42,7 @@ import net.brlns.gdownloader.downloader.structs.FormatInfo;
 import net.brlns.gdownloader.downloader.structs.MediaInfo;
 import net.brlns.gdownloader.event.EventDispatcher;
 import net.brlns.gdownloader.event.IEvent;
+import net.brlns.gdownloader.event.impl.QueueLiveSortToggledEvent;
 import net.brlns.gdownloader.event.impl.QueueSortOrderChangedEvent;
 import net.brlns.gdownloader.filters.AbstractUrlFilter;
 import net.brlns.gdownloader.filters.GenericFilter;
@@ -112,6 +113,8 @@ public class DownloadManager implements IEvent, AutoCloseable {
     private final Queue<QueueEntry> metadataQueryQueue = new ConcurrentLinkedQueue<>();
 
     private final DownloadSequencer sequencer = new DownloadSequencer();
+
+    private final AtomicBoolean liveSortEnabled = new AtomicBoolean();
 
     private final AtomicBoolean shouldNotifyCompletion = new AtomicBoolean();
 
@@ -1111,6 +1114,23 @@ public class DownloadManager implements IEvent, AutoCloseable {
 
     public QueueSortOrderEnum getSortOrder() {
         return sequencer.getCurrentSortOrder();
+    }
+
+    public boolean isLiveSortEnabled() {
+        return liveSortEnabled.get();
+    }
+
+    public void setLiveSortEnabled(boolean enabled) {
+        if (liveSortEnabled.getAndSet(enabled) != enabled) {
+            if (enabled) {
+                main.getGuiManager().getMediaCardManager()
+                    .reorderMediaCards(getSortedMediaCardIds());
+            }
+
+            EventDispatcher.dispatch(QueueLiveSortToggledEvent.builder()
+                .enabled(enabled)
+                .build());
+        }
     }
 
     private void updateRightClick(QueueEntry entry, QueueCategoryEnum category) {
