@@ -79,7 +79,6 @@ import static net.brlns.gdownloader.util.StringUtils.containsIgnoreCase;
 public final class MediaCardManager {
 
     private static final int RENDER_BUFFER_PX = 600;
-    private static final int SCROLL_BOTTOM_EPSILON_PX = 4;
 
     private final GDownloader main;
     private final GUIManager manager;
@@ -674,8 +673,6 @@ public final class MediaCardManager {
             return;
         }
 
-        boolean wasScrolledToBottom = isScrolledToBottom();
-
         int total = filteredIds.size();
 
         if (total == 0) {
@@ -751,20 +748,6 @@ public final class MediaCardManager {
         mediaQueuePane.doLayout();
         mediaQueuePane.revalidate();
         mediaQueuePane.repaint();
-
-        if (wasScrolledToBottom) {
-            scrollPaneToBottom(queueScrollPane);
-        }
-    }
-
-    private boolean isScrolledToBottom() {
-        JScrollBar verticalBar = queueScrollPane.getVerticalScrollBar();
-        if (verticalBar == null || !verticalBar.isVisible()) {
-            return false;
-        }
-
-        return verticalBar.getValue() + verticalBar.getVisibleAmount()
-            >= verticalBar.getMaximum() - SCROLL_BOTTOM_EPSILON_PX;
     }
 
     private void clearRenderedCards() {
