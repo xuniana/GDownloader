@@ -18,7 +18,9 @@ package net.brlns.gdownloader.util;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -48,6 +50,8 @@ public final class DirectoryUtils {
                         if (!Files.deleteIfExists(path)) {
                             allSucceeded.set(false);
                         }
+                    } catch (NoSuchFileException e) {
+                        // Already gone - we welcome this fact.
                     } catch (IOException e) {
                         log.error("Failed to delete: {}", path, e);
                         // Windows shenanigans
@@ -60,7 +64,10 @@ public final class DirectoryUtils {
                 });
 
             return allSucceeded.get();
-        } catch (IOException e) {
+        } catch (NoSuchFileException e) {
+            log.debug("File vanished during walk of {}: {}", directory, e.getMessage());
+            return true;
+        } catch (UncheckedIOException | IOException e) {
             log.error("Failed to delete: {}", directory, e);
             return false;
         }
