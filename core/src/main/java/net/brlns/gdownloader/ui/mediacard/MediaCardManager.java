@@ -79,6 +79,7 @@ import static net.brlns.gdownloader.util.StringUtils.containsIgnoreCase;
 public final class MediaCardManager {
 
     private static final int RENDER_BUFFER_PX = 600;
+    private static final int COLUMN_CHANGE_BOTTOM_EPSILON_PX = 24;
 
     private final GDownloader main;
     private final GUIManager manager;
@@ -99,6 +100,10 @@ public final class MediaCardManager {
     private int lastFirstIndex = -1;
     private int lastLastIndex = -1;
     private boolean visibleWindowRendered;
+
+    private int lastLayoutColumns = -1;
+    private int lastLayoutRowHeight = -1;
+    private boolean adjustingScroll;
 
     private int cachedRowHeight = -1;
     private CustomMediaCardUI measurementUi;
@@ -213,6 +218,10 @@ public final class MediaCardManager {
 
     private void onViewportScrolled() {
         assert SwingUtilities.isEventDispatchThread();
+
+        if (adjustingScroll) {
+            return;
+        }
 
         updateVisibleWindow(false);
         recomputeHover();
@@ -684,6 +693,8 @@ public final class MediaCardManager {
 
             lastFirstIndex = -1;
             lastLastIndex = -1;
+            lastLayoutColumns = -1;
+            lastLayoutRowHeight = -1;
             visibleWindowRendered = true;
 
             mediaQueuePane.setSize(viewportWidth, 0);
@@ -696,16 +707,19 @@ public final class MediaCardManager {
         int columns = mediaCardGridLayout.determineColumns(viewportWidth, total);
         int totalRows = (total + columns - 1) / columns;
 
-        Rectangle viewRect = queueScrollPane.getViewport().getViewRect();
+        Integer anchoredScrollY = computeAnchoredScrollY(columns, rowHeight, totalRows, total);
 
-        int firstRow = Math.max(0, (viewRect.y - RENDER_BUFFER_PX) / rowHeight);
-        int lastRow = Math.min(totalRows - 1, (viewRect.y + viewRect.height + RENDER_BUFFER_PX) / rowHeight);
+        Rectangle viewRect = queueScrollPane.getViewport().getViewRect();
+        int effectiveViewY = anchoredScrollY != null ? anchoredScrollY : viewRect.y;
+
+        int firstRow = Math.max(0, (effectiveViewY - RENDER_BUFFER_PX) / rowHeight);
+        int lastRow = Math.min(totalRows - 1, (effectiveViewY + viewRect.height + RENDER_BUFFER_PX) / rowHeight);
         firstRow = Math.min(firstRow, lastRow);
 
         int firstIndex = firstRow * columns;
         int lastIndex = Math.min(total - 1, (lastRow + 1) * columns - 1);
 
-        if (!force && firstIndex == lastFirstIndex && lastIndex == lastLastIndex) {
+        if (!force && anchoredScrollY == null && firstIndex == lastFirstIndex && lastIndex == lastLastIndex) {
             return;
         }
 
@@ -745,9 +759,67 @@ public final class MediaCardManager {
         visibleWindowRendered = true;
 
         mediaQueuePane.setSize(viewportWidth, totalRows * rowHeight);
-        mediaQueuePane.doLayout();
+
         mediaQueuePane.revalidate();
+        queueScrollPane.validate();
+
+        if (anchoredScrollY != null) {
+            int targetScrollY = anchoredScrollY;
+
+            adjustingScroll = true;
+            try {
+                queueScrollPane.getViewport().setViewPosition(new Point(viewRect.x, targetScrollY));
+            } finally {
+                adjustingScroll = false;
+            }
+        }
+
         mediaQueuePane.repaint();
+
+        lastLayoutColumns = columns;
+        lastLayoutRowHeight = rowHeight;
+    }
+
+    @Nullable
+    private Integer computeAnchoredScrollY(int newColumns, int newRowHeight, int newTotalRows, int itemCount) {
+        if (lastLayoutColumns <= 0 || lastLayoutRowHeight <= 0
+            || (newColumns == lastLayoutColumns && newRowHeight == lastLayoutRowHeight)) {
+            return null;
+        }
+
+        JViewport viewport = queueScrollPane.getViewport();
+        Rectangle viewRect = viewport.getViewRect();
+
+        if (viewRect.height <= 0) {
+            return null;
+        }
+
+        int oldColumns = lastLayoutColumns;
+        int oldRowHeight = lastLayoutRowHeight;
+        int oldTotalRows = Math.max(1, (itemCount + oldColumns - 1) / oldColumns);
+        int oldContentHeight = oldTotalRows * oldRowHeight;
+        int oldMaxScrollY = Math.max(0, oldContentHeight - viewRect.height);
+
+        int newContentHeight = newTotalRows * newRowHeight;
+        int newMaxScrollY = Math.max(0, newContentHeight - viewRect.height);
+
+        if (oldMaxScrollY > 0 && viewRect.y >= oldMaxScrollY - COLUMN_CHANGE_BOTTOM_EPSILON_PX) {
+            return newMaxScrollY;
+        }
+
+        int anchorRow = Math.max(0, viewRect.y / oldRowHeight);
+        anchorRow = Math.min(anchorRow, oldTotalRows - 1);
+
+        double fraction = (viewRect.y - (double)anchorRow * oldRowHeight) / oldRowHeight;
+        fraction = Math.max(0.0, Math.min(1.0, fraction));
+
+        long anchorItemIndex = Math.min((long)anchorRow * oldColumns, Math.max(0, itemCount - 1));
+
+        int newRow = (int)(anchorItemIndex / newColumns);
+
+        int scrollY = (int)Math.round((newRow + fraction) * newRowHeight);
+
+        return Math.max(0, Math.min(scrollY, newMaxScrollY));
     }
 
     private void clearRenderedCards() {
