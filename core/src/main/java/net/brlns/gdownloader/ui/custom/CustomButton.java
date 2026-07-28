@@ -48,6 +48,7 @@ public class CustomButton extends JButton {
         pressedBackgroundColor = pressedBackgroundColorIn;
 
         super.setContentAreaFilled(false);
+        super.setOpaque(false);
     }
 
     @Override

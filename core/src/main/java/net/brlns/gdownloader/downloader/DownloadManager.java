@@ -1144,15 +1144,18 @@ public class DownloadManager implements IEvent, AutoCloseable {
         }
 
         if (category == COMPLETED || category == FAILED) {
-            if (category == COMPLETED) {
-                entry.removeRightClick(_downloadPriorityKey);
-            }
-
             entry.removeRightClick(_forceStartKey);
             entry.addRightClick(_restartKey, () -> stopDownload(entry, () -> {
                 resetDownload(entry);
                 submitDownloadTask(entry, true);
             }));
+
+            if (category == COMPLETED) {
+                entry.removeRightClick(_downloadPriorityKey);
+            } else {
+                entry.addRightClick(_downloadPriorityKey,
+                    entry.getDownloadPriorityMenu(this));
+            }
         } else {
             entry.removeRightClick(_restartKey);
             entry.addRightClick(_forceStartKey,

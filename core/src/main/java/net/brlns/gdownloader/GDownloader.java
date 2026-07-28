@@ -91,7 +91,7 @@ import static net.brlns.gdownloader.util.StringUtils.notNullOrEmpty;
 //
 // TODO max simultaneous downloads should be independent per website
 // TODO scale on resolution DPI
-// TODO verify checksums during updates, add bouncycastle, check signatures
+// TODO verify checksums during updates, check signatures
 // TODO write a component factory for GUIManager
 // FEEDBACK Should choose to download video and audio independently on each card
 // DROPPED check updates on a timer, but do not ever restart when anything is in the queue.
@@ -106,22 +106,20 @@ import static net.brlns.gdownloader.util.StringUtils.notNullOrEmpty;
 // TODO Notify the user whenever a setting that requires restart was changed.
 // TODO Add an url ignore list / Allow filters to be disabled
 // TODO Add option to clear all installed updates and start fresh. (Tackling certain issues where failed updates could break downloads)
-// TODO Wget integration
 // TODO NTFS File path length workaround for gallery-dl
 // TODO Split main window from GUIManager
 // TODO Fastutil collections
 // TODO Fix notification line wrapping
-// TODO Downloader priority settings
+// TODO Manual downloader priority settings
 // TODO Notifications are appearing below the main window when in fullscreen mode.
 // TODO About page
 // TODO Move config files, downloaders and their respective data to subfolders
 // TODO implement remuxing to mkv
 // TODO System/provided binary selection should be configurable for FFMPEG and Deno
 // TODO display number in download queue
-// TODO automatic ui sorting
 // TODO Manually mark downloads as complete, correctly move files to final directory
 // TODO Fetch favicons for url filters
-// TODO Tags/Filtering
+// TODO Tags
 // TODO Remove ffmpeg requirement by omitting transcoding arguments
 // TODO Implement plugin API, create example plugin, create more events.
 // prio

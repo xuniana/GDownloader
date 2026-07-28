@@ -42,6 +42,11 @@ public class CustomTabButton extends JButton {
     public CustomTabButton(String displayName) {
         super(displayName);
 
+        setOpaque(false);
+        setContentAreaFilled(false);
+        setBorderPainted(false);
+        setFocusPainted(false);
+
         addMouseListener(new MouseAdapter() {
             @Override
             public void mouseEntered(MouseEvent e) {
