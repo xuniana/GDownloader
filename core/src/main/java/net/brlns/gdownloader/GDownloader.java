@@ -135,6 +135,7 @@ import static net.brlns.gdownloader.util.StringUtils.notNullOrEmpty;
 // TODO Direct-HTTP: post-processors (unzip, convert, etc)
 // TODO Direct-HTTP: metadata extractors for host resolvers
 // TODO Rest API for browser-level requests (url add/remove, batch updates, start/stop)
+// TODO Support custom cookies.txt locations
 /**
  * GDownloader - GUI wrapper for yt-dlp
  *
@@ -918,6 +919,16 @@ public final class GDownloader {
         }
 
         return Collections.unmodifiableList(list);
+    }
+
+    public static void spawn(Runnable task) {
+        GLOBAL_THREAD_POOL.execute(() -> {
+            try {
+                task.run();
+            } catch (Throwable t) {
+                handleException(t);
+            }
+        });
     }
 
     public static boolean isFromJar() {

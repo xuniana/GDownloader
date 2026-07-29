@@ -73,6 +73,7 @@ import net.brlns.gdownloader.util.StringUtils;
 import net.brlns.gdownloader.util.collection.ExpiringSet;
 import net.brlns.gdownloader.util.collection.LRUCache;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.downloader.enums.DownloadFlagsEnum.*;
 import static net.brlns.gdownloader.downloader.enums.QueueCategoryEnum.*;
 import static net.brlns.gdownloader.lang.Language.*;
@@ -174,7 +175,7 @@ public class DownloadManager implements IEvent, AutoCloseable {
             downloadIdGenerator.set(nextId);
             log.info("Current download id: {}", nextId);
 
-            GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+            spawn(() -> {
                 linkCaptureLock.lock();// Intentionally block url capture during the entire restoring proccess
                 try {
                     int count = 0;
@@ -1250,7 +1251,7 @@ public class DownloadManager implements IEvent, AutoCloseable {
 
         currentlyQueryingCount.incrementAndGet();
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             try {
                 if (queueEntry.getCancelHook().get()) {
                     return;
@@ -1393,7 +1394,7 @@ public class DownloadManager implements IEvent, AutoCloseable {
 
         entry.setSkipped(false);
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             try {
                 if (!downloadsRunning.get()) {
                     if (force) {

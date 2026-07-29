@@ -24,6 +24,9 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -63,6 +66,7 @@ import net.brlns.gdownloader.util.ImageUtils;
 import net.brlns.gdownloader.util.StringUtils;
 import net.brlns.gdownloader.util.collection.LRUCache;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.downloader.enums.DownloaderIdEnum.*;
 import static net.brlns.gdownloader.lang.Language.l10n;
 import static net.brlns.gdownloader.ui.GUIManager.createIconButton;
@@ -440,7 +444,7 @@ public class HistoryWindow {
             lastEndIndex = -1;
         });
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             long count = isRepoInitialized()
                 ? getRepo().getCount(filter)
                 : 0L;
@@ -646,7 +650,7 @@ public class HistoryWindow {
         String filterSnapshot = currentFilter;
         int generation = loadGeneration;
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             List<DownloadHistorySummary> rows = isRepoInitialized()
                 ? getRepo().getSummaryPage(offset, PAGE_SIZE, filterSnapshot)
                 : List.of();
@@ -693,7 +697,7 @@ public class HistoryWindow {
     private void dispatchEntityFetch(List<String> missing) {
         int generation = loadGeneration;
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             Map<String, DownloadHistoryEntity> resolved = isRepoInitialized()
                 ? getRepo().getEntitiesByUrls(missing)
                 : Map.of();
@@ -751,7 +755,7 @@ public class HistoryWindow {
             return;
         }
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             Map<String, DownloadHistoryEntity> fetched = isRepoInitialized()
                 ? getRepo().getEntitiesByUrls(missing)
                 : Map.of();
@@ -962,7 +966,7 @@ public class HistoryWindow {
         String filterSnapshot = currentFilter;
         int generation = loadGeneration;
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             List<String> urls = isRepoInitialized()
                 ? getRepo().getUrlsPage(min, count, filterSnapshot)
                 : List.of();
@@ -989,7 +993,7 @@ public class HistoryWindow {
         int generation = loadGeneration;
         int lastIndex = totalCount.get() - 1;
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             List<String> urls = isRepoInitialized()
                 ? getRepo().getAllUrls(filterSnapshot)
                 : List.of();
@@ -1165,11 +1169,93 @@ public class HistoryWindow {
                     .build());
             }, () -> "/assets/restart.png"));
 
+        if (!existingFiles.isEmpty()) {
+            menu.put(l10n("gui.delete_files"),
+                new RunnableMenuEntry(() -> deleteFilesFromHistory(entry),
+                    () -> "/assets/bin.png"));
+
+            menu.put(l10n("gui.delete_files_and_remove"),
+                new RunnableMenuEntry(() -> deleteAndRemoveFromHistory(entry),
+                    () -> "/assets/bin.png"));
+        }
+
         menu.put(l10n("gui.history.remove"),
             new RunnableMenuEntry(() -> removeUrlsFromHistory(Set.of(entry.getUrl())),
-                () -> "/assets/bin.png"));
+                () -> "/assets/x-mark.png"));
 
         return menu;
+    }
+
+    private boolean deleteExistingFiles(DownloadHistoryEntity entry) {
+        boolean deletedAny = false;
+
+        for (String path : entry.getFilePaths()) {
+            File file = new File(path);
+
+            try {
+                if (file.isFile() && Files.deleteIfExists(file.toPath())) {
+                    deletedAny = true;
+                }
+            } catch (IOException e) {
+                GDownloader.handleException(e);
+            }
+        }
+
+        for (String path : entry.getFilePaths()) {
+            File file = new File(path);
+
+            try {
+                if (file.isDirectory() && Files.deleteIfExists(file.toPath())) {
+                    deletedAny = true;
+                }
+            } catch (DirectoryNotEmptyException e) {
+                log.warn("Directory {} is not empty, ignoring...", file);
+            } catch (IOException e) {
+                GDownloader.handleException(e);
+            }
+        }
+
+        return deletedAny;
+    }
+
+    private void deleteFilesFromHistory(DownloadHistoryEntity entry) {
+        spawn(() -> {
+            boolean success = deleteExistingFiles(entry);
+
+            runOnEDT(() -> {
+                entityCache.remove(entry.getUrl());
+
+                showDeleteFilesToast(success);
+            });
+        });
+    }
+
+    private void deleteAndRemoveFromHistory(DownloadHistoryEntity entry) {
+        Set<String> urls = Set.of(entry.getUrl());
+
+        spawn(() -> {
+            boolean success = deleteExistingFiles(entry);
+
+            removeFromRepo(urls);
+
+            runOnEDT(() -> {
+                purgeFromLocalState(urls);
+
+                showDeleteFilesToast(success);
+            });
+        });
+    }
+
+    private void showDeleteFilesToast(boolean success) {
+        ToastMessenger.show(frame, Message.builder()
+            .title("gui.delete_files.notification_title")
+            .message(success
+                ? "gui.delete_files.deleted"
+                : "gui.delete_files.no_files")
+            .durationMillis(3000)
+            .messageType(MessageTypeEnum.INFO)
+            .discardDuplicates(true)
+            .build());
     }
 
     private void openFirstAvailableFile(DownloadHistoryEntity entry) {
@@ -1208,24 +1294,11 @@ public class HistoryWindow {
             return;
         }
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
-            if (isRepoInitialized()) {
-                getRepo().removeUrls(urls);
-            }
+        spawn(() -> {
+            removeFromRepo(urls);
 
             runOnEDT(() -> {
-                selectedUrls.removeAll(urls);
-
-                for (String url : urls) {
-                    entityCache.remove(url);
-                }
-
-                if (lastSelectedUrl != null && urls.contains(lastSelectedUrl)) {
-                    lastSelectedUrl = null;
-                    lastSelectedIndex = -1;
-                }
-
-                reload(true);
+                purgeFromLocalState(urls);
 
                 ToastMessenger.show(frame, Message.builder()
                     .title("gui.history.notification_title")
@@ -1235,6 +1308,27 @@ public class HistoryWindow {
                     .build());
             });
         });
+    }
+
+    private void removeFromRepo(Set<String> urls) {
+        if (isRepoInitialized()) {
+            getRepo().removeUrls(urls);
+        }
+    }
+
+    private void purgeFromLocalState(Set<String> urls) {
+        selectedUrls.removeAll(urls);
+
+        for (String url : urls) {
+            entityCache.remove(url);
+        }
+
+        if (lastSelectedUrl != null && urls.contains(lastSelectedUrl)) {
+            lastSelectedUrl = null;
+            lastSelectedIndex = -1;
+        }
+
+        reload(true);
     }
 
     private void confirmClearAll() {
@@ -1258,7 +1352,7 @@ public class HistoryWindow {
             new GUIManager.DialogButton("", (boolean setDefault) -> {
             }),
             new GUIManager.DialogButton(l10n("gui.history.clear_all"), (boolean setDefault) -> {
-                GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+                spawn(() -> {
                     if (isRepoInitialized()) {
                         getRepo().clearAll();
                     }

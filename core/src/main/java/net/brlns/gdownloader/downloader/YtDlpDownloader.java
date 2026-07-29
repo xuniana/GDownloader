@@ -69,6 +69,7 @@ import net.brlns.gdownloader.util.FileUtils;
 import net.brlns.gdownloader.util.Pair;
 import net.brlns.gdownloader.util.URLUtils;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.downloader.enums.DownloadFlagsEnum.*;
 import static net.brlns.gdownloader.downloader.enums.DownloadTypeEnum.*;
 import static net.brlns.gdownloader.lang.Language.*;
@@ -146,7 +147,7 @@ public class YtDlpDownloader extends AbstractDownloader {
             return;
         }
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             try {
                 ProcessArguments arguments = new ProcessArguments(
                     executablePath.get().getAbsolutePath(),

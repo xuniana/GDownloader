@@ -66,6 +66,7 @@ import net.brlns.gdownloader.ui.dnd.WindowTransferHandler;
 import net.brlns.gdownloader.ui.menu.RightClickMenuEntries;
 import net.brlns.gdownloader.util.collection.ConcurrentLinkedHashSet;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.ui.UIUtils.runOnEDT;
 import static net.brlns.gdownloader.ui.UIUtils.scrollPaneToBottom;
 import static net.brlns.gdownloader.ui.themes.ThemeProvider.color;
@@ -926,7 +927,7 @@ public final class MediaCardManager {
 
         Runnable becomeVisible = mediaCard.getOnBecomeVisible();
         if (becomeVisible != null) {
-            GDownloader.GLOBAL_THREAD_POOL.execute(becomeVisible);
+            spawn(becomeVisible);
         }
 
         return card;

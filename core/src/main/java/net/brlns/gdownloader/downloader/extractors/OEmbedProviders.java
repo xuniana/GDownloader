@@ -83,7 +83,7 @@ public class OEmbedProviders {
             return;
         }
 
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        GDownloader.spawn(() -> {
             main.getConnectivityListener().waitForConnectivity();
 
             try {

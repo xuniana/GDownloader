@@ -43,6 +43,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.lang.Language.l10n;
 
 /**
@@ -202,7 +203,7 @@ public class ClipboardManager {
     }
 
     private void triggerRevalidation() {
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+        spawn(() -> {
             //Wait a bit for data to propagate.
             try {
                 Thread.sleep(200);
@@ -257,7 +258,8 @@ public class ClipboardManager {
         }
 
         CompletableFuture<Integer> result = new CompletableFuture<>();
-        GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+
+        spawn(() -> {
             try {
                 Set<String> urls = new HashSet<>();
                 for (Map.Entry<FlavorType, String> entry : extractedData.entrySet()) {

@@ -74,6 +74,7 @@ import net.brlns.gdownloader.ui.themes.UIColors;
 import net.brlns.gdownloader.updater.IUpdater;
 import net.brlns.gdownloader.util.Version;
 
+import static net.brlns.gdownloader.GDownloader.spawn;
 import static net.brlns.gdownloader.lang.Language.*;
 import static net.brlns.gdownloader.system.ShutdownRegistry.closeable;
 import static net.brlns.gdownloader.ui.UIUtils.*;
@@ -1032,7 +1033,7 @@ public final class GUIManager implements AutoCloseable {
                 new DialogButton("", (boolean setDefault) -> {
                 }),
                 new DialogButton(l10n("gui.queue.clear_all"), (boolean setDefault) -> {
-                    GDownloader.GLOBAL_THREAD_POOL.execute(() -> {
+                    spawn(() -> {
                         main.getDownloadManager().clearQueue(CloseReasonEnum.MANUAL);
                     });
                 })
