@@ -358,7 +358,7 @@ public abstract class AbstractGitUpdater implements IUpdater {
     protected Pair<String, String> getLatestReleaseTag() throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(getAPIEndpoint()))
-            .timeout(Duration.ofSeconds(15))
+            .timeout(Duration.ofSeconds(20))
             .header("User-Agent", URLUtils.getGlobalUserAgent())
             .build();
 

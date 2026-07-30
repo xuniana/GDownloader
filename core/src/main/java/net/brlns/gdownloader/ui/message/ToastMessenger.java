@@ -273,6 +273,10 @@ public class ToastMessenger extends AbstractMessenger {
     }
 
     public static void show(JFrame parent, Message message) {
+        if (parent == null) {
+            return;
+        }
+
         AbstractMessenger instance = _instances.computeIfAbsent(parent, ToastMessenger::new);
         instance.display(message);
     }

@@ -1274,6 +1274,7 @@ public class HistoryWindow {
             .message("gui.history.no_files.toast")
             .durationMillis(3000)
             .messageType(MessageTypeEnum.WARNING)
+            .discardDuplicates(true)
             .build());
     }
 
@@ -1305,6 +1306,7 @@ public class HistoryWindow {
                     .message("gui.history.removed.toast", urls.size())
                     .durationMillis(2000)
                     .messageType(MessageTypeEnum.INFO)
+                    .discardDuplicates(true)
                     .build());
             });
         });
@@ -1372,6 +1374,7 @@ public class HistoryWindow {
                             .message("gui.history.cleared.toast")
                             .durationMillis(2500)
                             .messageType(MessageTypeEnum.INFO)
+                            .discardDuplicates(true)
                             .build());
                     });
                 });

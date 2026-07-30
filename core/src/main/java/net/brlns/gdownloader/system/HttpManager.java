@@ -60,7 +60,7 @@ public class HttpManager {
 
         HttpClient.Builder builder = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.ALWAYS)
-            .connectTimeout(Duration.ofSeconds(10))
+            .connectTimeout(Duration.ofSeconds(15))
             .version(HttpClient.Version.HTTP_2);
 
         if (proxy.type() != Proxy.Type.DIRECT) {
