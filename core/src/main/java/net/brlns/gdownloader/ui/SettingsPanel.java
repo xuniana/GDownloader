@@ -1630,7 +1630,7 @@ public class SettingsPanel {
             long currentBytesPerSecond = settings.getDirectHttpSettings().getMaxDownloadSpeedBytesPerSecond();
 
             JLabel valueLabel = new JLabel(formatSpeedLabel(currentBytesPerSecond));
-            valueLabel.setForeground(color(background == SETTINGS_ROW_BACKGROUND_DARK ? LIGHT_TEXT : LIGHT_TEXT));
+            valueLabel.setForeground(color(LIGHT_TEXT));
 
             JSlider slider = new JSlider(JSlider.HORIZONTAL, 0, 100,
                 MathUtils.convertBytesPerSecondToSliderValue(currentBytesPerSecond));
@@ -1785,6 +1785,7 @@ public class SettingsPanel {
             .background(resolveColor(panel))
             .labelKey("settings.maximum_download_retries")
             .min(0).max(50).majorTickSpacing(5)
+            .snapToTicks(false)
             .getter(settings::getMaxDownloadRetries)
             .setter(settings::setMaxDownloadRetries)
             .build());
@@ -1793,6 +1794,7 @@ public class SettingsPanel {
             .background(resolveColor(panel))
             .labelKey("settings.maximum_fragment_retries")
             .min(0).max(50).majorTickSpacing(5)
+            .snapToTicks(false)
             .getter(settings::getMaxFragmentRetries)
             .setter(settings::setMaxFragmentRetries)
             .build());
@@ -2576,6 +2578,8 @@ public class SettingsPanel {
     public static JSlider addSlider(JPanel panel, SliderBuilder builder) {
         JLabel label = createLabel(builder.getLabelKey(), LIGHT_TEXT);
 
+        UIColors background = builder.getBackground();
+
         JSlider slider = new JSlider(builder.getMin(), builder.getMax(), builder.getGetter().get());
         if (builder.isRequiresRestart()) {
             slider.setToolTipText(l10n("settings.requires_restart.tooltip"));
@@ -2586,6 +2590,24 @@ public class SettingsPanel {
         slider.setSnapToTicks(builder.isSnapToTicks());
         slider.setPaintTicks(builder.isPaintTicks());
         slider.setPaintLabels(builder.isPaintLabels());
+
+        customizeSlider(slider, background, SLIDER_FOREGROUND);
+
+        JComponent rowComponent = slider;
+
+        if (!builder.isSnapToTicks() && builder.getMajorTickSpacing() > 1) {
+            JLabel valueLabel = new JLabel(String.valueOf(slider.getValue()));
+            valueLabel.setForeground(color(LIGHT_TEXT));
+
+            slider.addChangeListener(e -> valueLabel.setText(String.valueOf(slider.getValue())));
+
+            JPanel wrapperPanel = new JPanel(new BorderLayout());
+            wrapperPanel.setBackground(color(background));
+            wrapperPanel.add(valueLabel, BorderLayout.NORTH);
+            wrapperPanel.add(slider, BorderLayout.CENTER);
+
+            rowComponent = wrapperPanel;
+        }
 
         slider.addChangeListener((ChangeEvent e) -> {
             JSlider source = (JSlider)e.getSource();
@@ -2606,8 +2628,7 @@ public class SettingsPanel {
             }
         });
 
-        customizeSlider(slider, builder.getBackground(), SLIDER_FOREGROUND);
-        wrapComponentRow(panel, label, slider, builder.getBackground());
+        wrapComponentRow(panel, label, rowComponent, background);
         enableComponentAndLabel(slider, builder.isEnabled());
 
         return slider;
